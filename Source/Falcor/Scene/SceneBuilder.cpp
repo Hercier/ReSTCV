@@ -816,7 +816,15 @@ namespace Falcor
         assert(mSceneData.cameras.size() <= std::numeric_limits<uint32_t>::max());
         return (uint32_t)mSceneData.cameras.size() - 1;
     }
-
+    uint32_t SceneBuilder::addCameraNode(const Camera::SharedPtr& pCamera, uint32_t nodeID)
+    {
+        assert(pCamera);
+        if (nodeID >= mSceneGraph.size()) throw std::runtime_error("SceneBuilder::addMeshInstance() - nodeID " + std::to_string(nodeID) + " is out of range");
+        pCamera->setHasAnimation(true);
+        setNodeInterpolationMode(nodeID, Animation::InterpolationMode::Linear, true);
+        pCamera->setNodeID(nodeID);
+        return addCamera(pCamera);
+    }
     Camera::SharedPtr SceneBuilder::getSelectedCamera() const
     {
         return mSceneData.selectedCamera < mSceneData.cameras.size() ? mSceneData.cameras[mSceneData.selectedCamera] : nullptr;
@@ -2758,6 +2766,7 @@ namespace Falcor
         sceneBuilder.def("addLight", &SceneBuilder::addLight, "light"_a);
         sceneBuilder.def("getLight", &SceneBuilder::getLight, "name"_a);
         sceneBuilder.def("addCamera", &SceneBuilder::addCamera, "camera"_a);
+        sceneBuilder.def("addCameraNode", &SceneBuilder::addCameraNode, "camera"_a, "nodeID"_a);
         sceneBuilder.def("addAnimation", &SceneBuilder::addAnimation, "animation"_a);
         sceneBuilder.def("createAnimation", &SceneBuilder::createAnimation, "animatable"_a, "name"_a, "duration"_a);
         sceneBuilder.def("addNode", [] (SceneBuilder* pSceneBuilder, const std::string& name, const Transform& transform, uint32_t parent) {

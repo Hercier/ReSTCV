@@ -23,7 +23,7 @@ struct EvaluateFinalSamples
     // Static configuration.
     static const bool kUseVisibility = USE_VISIBILITY;
     static const bool kReuseVisibility = REUSE_VISIBILITY;
-
+    static const uint kCVMode = CV_MODE;
     static const DebugOutput kDebugOutput = DebugOutput(DEBUG_OUTPUT);
 
     // Resources.
@@ -62,6 +62,25 @@ struct EvaluateFinalSamples
             // Evaluate visibility.
             float visibility = 1.f;
             if (kUseVisibility) visibility = evalContext.evalVisibility(evaluatedLightSample);
+            if (kCVMode == 0) {
+                finalSample.contribution = 0;
+            }
+            else {
+                if (kCVMode == 1) {
+                    finalSample.contribution = reservoir.accumulatedContribution - reservoir.weight * evalContext.evalScalarBGV(evaluatedLightSample) * visibility * lights.evalEmission(reservoir.lightSample);
+                    finalSample.contribution = isfinite(finalSample.contribution) ? finalSample.contribution : float3(0.f);
+                    reservoir.accumulatedContribution=finalSample.contribution;
+                    reservoirs[pixelIndex] = reservoir.pack();
+                }
+                else {
+                    finalSample.contribution = reservoir.accumulatedContribution - reservoir.weight * evalContext.evalScalarBGV(evaluatedLightSample) * visibility * lights.evalEmission(reservoir.lightSample);
+                    finalSample.contribution = isfinite(finalSample.contribution) ? finalSample.contribution : float3(0.f);
+                    reservoir.accumulatedContribution = finalSample.contribution;
+                    reservoirs[pixelIndex] = reservoir.pack();
+                }
+            }
+            print("contribution", finalSample.contribution);
+            print("visibility", visibility);
 
             if (visibility > 0.f)
             {

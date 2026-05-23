@@ -164,13 +164,15 @@ struct ReconnectionData
     }
 }
 
-// real time: RCDATA_PATH_NUM = 6, RCDATA_PAD_SIZE = 1  (256 bytes)
-// offline:   RCDATA_PATH_NUM = 12, RCDATA_PAD_SIZE = 2 (512 bytes)
+// RCDATA_PATH_NUM is sized by the CPU for the active reuse pattern. Temporal reuse
+// needs two entries; spatial hybrid reuse needs two entries per neighbor index.
 
 struct PixelReconnectionData
 {
     ReconnectionData data[RCDATA_PATH_NUM];
-    float4 padding[RCDATA_PAD_SIZE]; //pad to 256 bytes
+#if RCDATA_PAD_SIZE > 0
+    float4 padding[RCDATA_PAD_SIZE]; // pad to a 256-byte boundary
+#endif
 }
 
 
@@ -234,7 +236,7 @@ struct PathReservoir
     TriMeshHitInfo rcVertexHit; // hitinfo of the reconnection vertex
     float3 rcVertexWi[kRcAttrCount]; // incident direction on reconnection vertex
     float3 rcVertexIrradiance[kRcAttrCount]; // sampled irradiance on reconnection vertex
-
+    float3 accumulatedContribution; //accumulated contribution with control variate
 #if BPR
     float rcLightPdf; 
     float3 rcVertexBSDFLightSamplingIrradiance;
@@ -261,6 +263,7 @@ struct PathReservoir
     {
         M = 0.f;
         weight = 0.f;
+        accumulatedContribution = 0.f;
         pathFlags.flags = 0;
         pathFlags.insertRcVertexLength(kMaximumPathLength);
         F = 0.f;
@@ -293,11 +296,12 @@ struct PathReservoir
         M += 1.f;
 
         float w = toScalar(in_F) / p;
+        float3 L = in_F / p;
+        accumulatedContribution += (isfinite(L) ? L : float3(0.f));
 
         if (isnan(w) || w == 0.f) return false;
 
         weight += w;
-
         // Accept?
         if (sampleNext1D(sg) * weight <= w)
         {
@@ -323,11 +327,11 @@ struct PathReservoir
         float w = toScalar(in_F) * in_Jacobian * inReservoir.M * inReservoir.weight * misWeight;
 
         M += inReservoir.M;
+        accumulatedContribution += inReservoir.accumulatedContribution;
 
         if (isnan(w) || w == 0.f) return false;
 
         weight += w;
-
         // Accept?
         if (forceAdd || sampleNext1D(sg) * weight <= w)
         {
@@ -358,11 +362,10 @@ struct PathReservoir
         float w = toScalar(in_F) * in_Jacobian * inReservoir.weight * misWeight;
 
         M += inReservoir.M;
-
+        accumulatedContribution += isfinite(inReservoir.accumulatedContribution) ? inReservoir.accumulatedContribution : 0.f;
         if (isnan(w) || w == 0.f) return false;
 
         weight += w;
-
         // Accept?
         if (forceAdd || sampleNext1D(sg) * weight <= w)
         {
@@ -387,6 +390,40 @@ struct PathReservoir
         return false;
     }
 
+    [mutating]
+    bool mergeWhenEmpty(float3 in_F, float in_Jacobian, PathReservoir inReservoir, inout SampleGenerator sg, float misWeight = 1.f, bool forceAdd = false)
+    {
+        float w = toScalar(in_F) * in_Jacobian * inReservoir.weight * misWeight;
+
+        M += inReservoir.M;
+        accumulatedContribution += isfinite(inReservoir.accumulatedContribution) ? inReservoir.accumulatedContribution : 0.f;
+        if (isnan(w) || w == 0.f) return false;
+
+        // weight += w;
+        //  Accept?
+        if (forceAdd || M == inReservoir.M)
+        {
+            weight = inReservoir.weight;
+            pathFlags = inReservoir.pathFlags;
+            rcRandomSeed = inReservoir.rcRandomSeed;
+            initRandomSeed = inReservoir.initRandomSeed;
+            cachedJacobian = inReservoir.cachedJacobian;
+            lightPdf = inReservoir.lightPdf;
+            rcVertexWi[0] = inReservoir.rcVertexWi[0];
+            rcVertexHit = inReservoir.rcVertexHit;
+            rcVertexIrradiance[0] = inReservoir.rcVertexIrradiance[0];
+#if BPR
+            rcVertexWi[1] = inReservoir.rcVertexWi[1];
+            rcVertexIrradiance[1] = inReservoir.rcVertexIrradiance[1];
+            rcVertexBSDFLightSamplingIrradiance = inReservoir.rcVertexBSDFLightSamplingIrradiance;
+            rcLightPdf = inReservoir.rcLightPdf;
+#endif
+            F = in_F;
+            return true;
+        }
+
+        return false;
+    }
 
 
     [mutating]
@@ -395,11 +432,11 @@ struct PathReservoir
         float w = inReservoir.weight;
 
         M += inReservoir.M;
+        accumulatedContribution += inReservoir.accumulatedContribution;
 
         if (isnan(w) || w == 0.f) return false;
 
         weight += w;
-
         // Accept?
         if (sampleNext1D(sg) * weight <= w)
         {
@@ -438,6 +475,7 @@ struct PathReservoir
         float p_hat = toScalar(F);
         if (p_hat == 0.f || M == 0.f) weight = 0.f;
         else weight = weight / (p_hat * M);
+        accumulatedContribution /= M;
     }
 
     // assuming using proper resampling MIS weight, no need to divide by M

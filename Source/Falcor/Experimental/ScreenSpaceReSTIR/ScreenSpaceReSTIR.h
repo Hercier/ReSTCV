@@ -91,7 +91,12 @@ namespace Falcor
             IncomingRadiance = 0,
             OutgoingRadiance = 1
         };
-
+        enum class ControlVariateMode
+        {
+            None = 0,
+            Enable = 1,
+            STCV = 2
+        };
         /** Configuration options.
         */
         struct Options
@@ -158,6 +163,7 @@ namespace Falcor
 
             ReSTIRMode reSTIRMode = ReSTIRMode::TemporalAndUnbiasedSpatial; ///< ReSTIR GI Mode.
             TargetPDF targetPdf = TargetPDF::OutgoingRadiance;  ///< Target function mode.
+            ControlVariateMode CVMode = ControlVariateMode::Enable; ///< Control variate mode.
             uint32_t reSTIRGITemporalMaxSamples = 30;           ///< Maximum M value for temporal reuse stage.
             uint32_t reSTIRGISpatialMaxSamples = 100;           ///< Maximum M value for spatial reuse stage.
             uint32_t reSTIRGIReservoirCount = 1;                ///< Number of reservoirs per pixel.

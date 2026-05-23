@@ -65,9 +65,13 @@ private:
     void endFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void generatePaths(RenderContext* pRenderContext, const RenderData& renderData, int sampleId = 0);
     void tracePass(RenderContext* pRenderContext, const RenderData& renderData, const ComputePass::SharedPtr& pass, const std::string& passName, int sampleId);
-    void PathReusePass(RenderContext* pRenderContext, uint32_t restir_i, const RenderData& renderData, bool temporalReuse = false, int spatialRoundId = 0, bool isLastRound = false);
+    void PathReusePass(RenderContext* pRenderContext, uint32_t restir_i, const RenderData& renderData, bool temporalReuse = false, int spatialRoundId = 0, bool isLastRound = false,int updateId = 0,float centralImportance = 1.6f);
     void PathRetracePass(RenderContext* pRenderContext, uint32_t restir_i, const RenderData& renderData, bool temporalReuse = false, int spatialRoundId = 0);
     Texture::SharedPtr createNeighborOffsetTexture(uint32_t sampleCount);
+    uint32_t getEffectiveSpatialNeighborCount() const;
+    uint32_t getReconnectionDataPathCount() const;
+    uint32_t getReconnectionDataPadSize() const;
+    uint32_t getReconnectionDataElementSize() const;
 
     /** Static configuration. Changing any of these options require shader recompilation.
     */
@@ -103,6 +107,8 @@ private:
         bool        useDeterministicBSDF = true;                    ///< Evaluate all compatible lobes at BSDF sampling time.
 
         ReSTIRMISKind    spatialMisKind = ReSTIRMISKind::Pairwise;
+        ReSTIRCVMode   CVMode = ReSTIRCVMode::Decoupled;
+
         ReSTIRMISKind    temporalMisKind = ReSTIRMISKind::Talbot;
 
         ShiftMapping    shiftStrategy = ShiftMapping::Hybrid;
@@ -129,10 +135,11 @@ private:
         mEnableSpatialReuse = true;
         mSpatialReusePattern = SpatialReusePattern::Default;
         mPathReusePattern = PathReusePattern::NRooksShift;
-        mSmallWindowRestirWindowRadius = 2;
+        mSmallWindowRestirWindowRadius = 0;
         mSpatialNeighborCount = 3;
         mSpatialReuseRadius = 20.f;
         mNumSpatialRounds = 1;
+        mSpatialUpdateRounds = 1;
         mEnableTemporalReprojection = false;
         mUseMaxHistory = true;
         mUseDirectLighting = true;
@@ -172,10 +179,11 @@ private:
     bool                            mEnableSpatialReuse = true;
     SpatialReusePattern             mSpatialReusePattern = SpatialReusePattern::Default;
     PathReusePattern                mPathReusePattern = PathReusePattern::NRooksShift;
-    uint32_t                        mSmallWindowRestirWindowRadius = 2;
+    uint32_t                        mSmallWindowRestirWindowRadius = 0;
     int                             mSpatialNeighborCount = 3;
     float                           mSpatialReuseRadius = 20.f;
     int                             mNumSpatialRounds = 1;
+    int                             mSpatialUpdateRounds = 1;
 
     bool                            mEnableTemporalReprojection = true;
     bool                            mFeatureBasedRejection = true;
@@ -183,7 +191,7 @@ private:
     bool                            mUseMaxHistory = true;
 
     int                             mReservoirFrameCount = 0; // internal
-
+    float                           varF = 20.f; // internal
     bool                            mUseDirectLighting = true;
 
     int                             mTemporalHistoryLength = 20;
@@ -194,6 +202,7 @@ private:
     bool mResetRenderPassFlags = false;
 
     ComputePass::SharedPtr          mpSpatialReusePass;      ///< Merges reservoirs.
+    ComputePass::SharedPtr          mpSpatialUpdatePass;      ///< Updates Control Variates.
     ComputePass::SharedPtr          mpTemporalReusePass;      ///< Merges reservoirs.
     ComputePass::SharedPtr          mpComputePathReuseMISWeightsPass;
 
@@ -215,6 +224,7 @@ private:
     // enable multiple temporal reservoirs for spp > 1 (multiple ReSTIR chains)
     std::vector<Buffer::SharedPtr>               mpTemporalReservoirs;               ///< Output paths from the path sampling stage.
     Buffer::SharedPtr               mReconnectionDataBuffer;
+    Buffer::SharedPtr               mDifferenceBuffer;
     Buffer::SharedPtr               mPathReuseMISWeightBuffer;
 
     Texture::SharedPtr              mpTemporalVBuffer;

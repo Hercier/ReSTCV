@@ -126,17 +126,16 @@ struct InitialResampling
         // Determine offset and stride to stratify samples within the light tile.
         TinyUniformSampleGenerator sg = TinyUniformSampleGenerator(pixel, frameIndex);
 
-        print("Initial Resampling", 1);
-        print("-",pixel);
-        print("-", frameIndex);
-        print("-", sampleNext1D(sg));
+        // print("Initial Resampling", 1);
+        // print("-",pixel);
+        // print("-", frameIndex);
+        // print("-", sampleNext1D(sg));
 
         uint stride = (kLightTileSize + kInitialLightSampleCount - 1) / kInitialLightSampleCount;
         uint offset = min(uint(sampleNext1D(sg) * stride), stride - 1);
 
         // Setup resampling.
         RisState risState = RisState::createEmpty();
-
         // Resample light samples from the light tile.
         for (uint i = 0; i < kInitialLightSampleCount; ++i)
         {
@@ -149,9 +148,10 @@ struct InitialResampling
             float targetPdf = evalContext.evalTargetFunction(evaluatedLightSample);
             float sourcePdf = evalInitialSamplePdf(evalContext, loadedLightSample.lightSample, evaluatedLightSample);
             if (useSourcePDFForRMIS) targetPdf = sourcePdf;
-            streamingResampleStep(risState, loadedLightSample.lightSample, targetPdf, sourcePdf, sg);
+            if(streamingResampleStep(risState, loadedLightSample.lightSample, targetPdf, sourcePdf, sg)){
+                //sampleRadiance = control;
+            }
         }
-
         // Resample BRDF samples.
         if (kInitialBRDFSampleCount > 0)
         {
@@ -205,24 +205,42 @@ struct InitialResampling
                 const EvaluatedLightSample evaluatedLightSample = lights.evalLightSample(lightSample, evalContext.pos);
                 float targetPdf = evalContext.evalTargetFunction(evaluatedLightSample);
                 float sourcePdf = evalInitialSamplePdf(evalContext, lightSample, evaluatedLightSample);
+                //its speculara only, cannot use
+                //float3 control = evalContext.evalScalarBGV(evaluatedLightSample) * lights.evalEmission(lightSample) / sourcePdf;
+                //risState.accumulatedContribution += control;
                 streamingResampleStep(risState, lightSample, targetPdf, sourcePdf, sg);
             }
         }
 
         // Check visibility.
+        // Hard to account for Brdf(need extra mis), change to use final sample evaluation
+        risState.weight = risState.weight > 0.f ? (risState.weightSum / risState.M) / risState.weight : 0.f;
         if (kCheckVisibility && risState.lightSample.isValid())
         {
             const EvaluatedLightSample evaluatedLightSample = lights.evalLightSample(risState.lightSample, evalContext.pos);
-            if (evalContext.evalVisibility(evaluatedLightSample) == 0.f) risState = RisState::createEmpty();
+            if (evalContext.evalVisibility(evaluatedLightSample) == 0.f) {
+                risState.accumulatedContribution = float3(0.f);
+                risState.weight = 0.f;
+                risState.M = 1.f;
+                risState.weightSum = 0.f;
+            }
+            else {
+                risState.accumulatedContribution = risState.weight * evalContext.evalScalarBGV(evaluatedLightSample) * lights.evalEmission(risState.lightSample);
+            }
         }
+
+        print("final contribution",risState.accumulatedContribution);
+        print("M",risState.M);
+        print("weight",risState.weight);
 
         // Instead of storing the weight sum and weight individually,
         // we precompute the term that would be multiplied with the final sample evaluation.
-        risState.weight = risState.weight > 0.f ? (risState.weightSum / risState.M) / risState.weight : 0.f;
+        
         risState.M = 1.f;
 
         // Save reservoir.
-        reservoirs[pixelIndex] = risState.toReservoir().pack();
+        Reservoir finalReservoir = risState.toReservoir();
+        reservoirs[pixelIndex] = finalReservoir.pack();
 
         // Write debug output.
         if (kDebugOutput == DebugOutput::InitialWeight) debugOutput[pixel] = float4(float3(risState.weight), 0.f);

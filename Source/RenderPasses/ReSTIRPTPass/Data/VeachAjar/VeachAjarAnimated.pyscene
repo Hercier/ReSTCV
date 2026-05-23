@@ -1,3 +1,4 @@
+import math
 AnimatedVersion = True
 
 camera = Camera()
@@ -5,8 +6,8 @@ camera.position = float3(2.13964, 1.78114, -0.539359)
 camera.target = float3(1.29115, 1.58455, -1.03071)
 camera.up = float3(-0.00315989, 0.999993, -0.00179484)
 camera.focalLength = 36.9504
-sceneBuilder.addCamera(camera)
-
+CameraNodeId=sceneBuilder.addNode('Camera', Transform())
+sceneBuilder.addCameraNode(camera,CameraNodeId),
 Landscape = Material('Landscape')
 Landscape.loadTexture(MaterialTextureSlot.BaseColor, 'textures/landscape-with-a-lake.jpg')
 
@@ -66,137 +67,137 @@ if AnimatedVersion:
 
 obj = TriangleMesh.createFromFile('models/Light.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Light),
-    sceneBuilder.addNode('Light', Transform())
+    sceneBuilder.addNode('Light', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Light)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh008.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Landscape),
-    sceneBuilder.addNode('Landscape', Transform())
+    sceneBuilder.addNode('Landscape', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Landscape)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh013.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, PictureFrame),
-    sceneBuilder.addNode('PictureFrame', Transform())
+    sceneBuilder.addNode('PictureFrame', Transform()),
+    sceneBuilder.addTriangleMesh(obj, PictureFrame)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh011.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Floor),
-    sceneBuilder.addNode('Floor', Transform())
+    sceneBuilder.addNode('Floor', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Floor)
 )
 
 obj = TriangleMesh.createFromFile('models/DoorHandleTranslated.obj' if AnimatedVersion else 'models/Mesh015.obj' )
 DoorHandleNodeId = sceneBuilder.addNode('DoorHandle', DoorTransform)
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, DoorHandle),
-    DoorHandleNodeId
+    DoorHandleNodeId,
+    sceneBuilder.addTriangleMesh(obj, DoorHandle)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh016.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Hinge),
-    sceneBuilder.addNode('Hinge1', Transform())
+    sceneBuilder.addNode('Hinge1', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Hinge)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh012.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Hinge),
-    sceneBuilder.addNode('Hinge2', Transform())
+    sceneBuilder.addNode('Hinge2', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Hinge)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh010.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Hinge),
-    sceneBuilder.addNode('Hinge3', Transform())
+    sceneBuilder.addNode('Hinge3', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Hinge)
 )
 
 obj = TriangleMesh.createFromFile('models/DoorTranslated.obj' if AnimatedVersion else 'models/Mesh006.obj')
 DoorNodeId = sceneBuilder.addNode('Door', DoorTransform)
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Door),
-    DoorNodeId
+    DoorNodeId,
+    sceneBuilder.addTriangleMesh(obj, Door)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh005.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, DoorFrame),
-    sceneBuilder.addNode('DoorFrame', Transform())
+    sceneBuilder.addNode('DoorFrame', Transform()),
+    sceneBuilder.addTriangleMesh(obj, DoorFrame)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh007.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Diffuse),
-    sceneBuilder.addNode('TableLeg1', Transform())
+    sceneBuilder.addNode('TableLeg1', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Diffuse)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh003.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Diffuse),
-    sceneBuilder.addNode('TableLeg2', Transform())
+    sceneBuilder.addNode('TableLeg2', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Diffuse)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh002.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Diffuse),
-    sceneBuilder.addNode('TableLeg3', Transform())
+    sceneBuilder.addNode('TableLeg3', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Diffuse)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh001.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Diffuse),
-    sceneBuilder.addNode('TableLeg4', Transform())
+    sceneBuilder.addNode('TableLeg4', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Diffuse)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh004.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Table),
-    sceneBuilder.addNode('Table', Transform())
+    sceneBuilder.addNode('Table', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Table)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh014.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Diffuse),
-    sceneBuilder.addNode('Room', Transform())
+    sceneBuilder.addNode('Room', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Diffuse)
 )
 
 
 obj = TriangleMesh.createFromFile('models/Mesh000_Pot2.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Pot2),
-    sceneBuilder.addNode('Pot2Lid', Transform())
+    sceneBuilder.addNode('Pot2Lid', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Pot2)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh009_Pot2.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Pot2),
-    sceneBuilder.addNode('Pot2', Transform())
+    sceneBuilder.addNode('Pot2', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Pot2)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh000_Pot3.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Pot3),
-    sceneBuilder.addNode('Pot3Lid', Transform())
+    sceneBuilder.addNode('Pot3Lid', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Pot3)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh009_Pot3.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Pot3),
-    sceneBuilder.addNode('Pot3', Transform())
+    sceneBuilder.addNode('Pot3', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Pot3)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh000_Pot1.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Pot1),
-    sceneBuilder.addNode('Pot1Lid', Transform())
+    sceneBuilder.addNode('Pot1Lid', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Pot1)
 )
 
 obj = TriangleMesh.createFromFile('models/Mesh009_Pot1.obj')
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addTriangleMesh(obj, Pot1),
-    sceneBuilder.addNode('Pot1', Transform())
+    sceneBuilder.addNode('Pot1', Transform()),
+    sceneBuilder.addTriangleMesh(obj, Pot1)
 )
 
 if AnimatedVersion:
@@ -212,7 +213,19 @@ if AnimatedVersion:
         DoorTransform.rotationEulerDeg = float3(0, angleList[time] + 16.68,0) # rotating around y axis
         anim.addKeyframe(timeList[time], DoorTransform)
         anim2.addKeyframe(timeList[time], DoorTransform)
-        
+
     sceneBuilder.addAnimation(anim)
     sceneBuilder.addAnimation(anim2)
 
+    #A rotating camera
+    anim3 = Animation('CameraAnimation', CameraNodeId, 18)
+    camAngleList = [60, 80, 60]
+    camTimeList = [0, 5, 10]
+    for time in range(len(camTimeList)):
+        CameraTransform = Transform()
+        angle = camAngleList[time]
+        rad = angle * 3.14159 / 180.0
+        CameraTransform.translation = float3(2.13964, 1.78114, -0.539359)
+        CameraTransform.rotationEulerDeg = float3(0, angle, 0)
+        anim3.addKeyframe(camTimeList[time], CameraTransform)
+    sceneBuilder.addAnimation(anim3)

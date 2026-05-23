@@ -59,7 +59,12 @@ namespace Falcor
             { (uint32_t)ScreenSpaceReSTIR::TargetPDF::IncomingRadiance, "Incoming Radiance" },
             { (uint32_t)ScreenSpaceReSTIR::TargetPDF::OutgoingRadiance, "Outgoing Radiance" },
         };
-
+        const Gui::DropdownList kControlVariateModeList =
+        {
+            { (uint32_t)ScreenSpaceReSTIR::ControlVariateMode::None, "None" },
+            { (uint32_t)ScreenSpaceReSTIR::ControlVariateMode::Enable, "Enable" },
+            { (uint32_t)ScreenSpaceReSTIR::ControlVariateMode::STCV, "STCV" },
+        };
         const Gui::DropdownList kSpatialReusePatternList =
         {
             { (uint32_t)SpatialReusePattern::Default, std::string("Default")},
@@ -252,7 +257,8 @@ namespace Falcor
 
             mRecompile |= widget.checkbox("Use pairwise MIS", mOptions->usePairwiseMIS);
             widget.tooltip("Use pairwise MIS when combining samples.");
-
+            mRecompile |= widget.dropdown("Control Variate Mode", kControlVariateModeList, reinterpret_cast<uint32_t&>(mOptions->CVMode));
+            widget.tooltip("Control variate mode.");
             mRecompile |= widget.checkbox("Unbiased", mOptions->unbiased);
             widget.tooltip("Use unbiased version of ReSTIR by querying extra visibility rays.");
         }
@@ -447,19 +453,19 @@ namespace Falcor
             {
                 //mpReservoirs = Buffer::createStructured(mpReflectTypes["reservoirs"], elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
                 // WARNING: this assumes we use the uint4 packedReservoir by default (Reservoir.slang)
-                mpReservoirs = Buffer::createStructured(16, elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
+                mpReservoirs = Buffer::createStructured(24, elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
             }
             if (!mpPrevReservoirs || mpPrevReservoirs->getElementCount() < elementCount || mRequestReallocate)
             {
                 //mpPrevReservoirs = Buffer::createStructured(mpReflectTypes["reservoirs"], elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
                 // WARNING: this assumes we use the uint4 packedReservoir by default (Reservoir.slang)
-                mpPrevReservoirs = Buffer::createStructured(16, elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
+                mpPrevReservoirs = Buffer::createStructured(24, elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
             }
 
             if (!mpFinalSamples || mpFinalSamples->getElementCount() < elementCount || mRequestReallocate)
             {
                 //mpFinalSamples = Buffer::createStructured(mpReflectTypes["finalSamples"], elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
-                mpFinalSamples = Buffer::createStructured(32, elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
+                mpFinalSamples = Buffer::createStructured(40, elementCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
             }
 
             mRequestReallocate = false;
@@ -663,7 +669,9 @@ namespace Falcor
             defines.add("INITIAL_BRDF_SAMPLE_COUNT", std::to_string(mOptions->initialBRDFSampleCount));
 
             // Only need to check visibility if either temporal or spatial reuse is active.
-            bool checkVisibility = mOptions->useInitialVisibility & (mOptions->useTemporalResampling || mOptions->useSpatialResampling);
+            //remove for debugging
+            //bool checkVisibility = mOptions->useInitialVisibility & (mOptions->useTemporalResampling || mOptions->useSpatialResampling);
+            bool checkVisibility = mOptions->useInitialVisibility;
             defines.add("CHECK_VISIBILITY", checkVisibility ? "1" : "0");
 
             if (!mpInitialResampling)
@@ -685,11 +693,12 @@ namespace Falcor
             defines.add("MAX_HISTORY_LENGTH", std::to_string(mOptions->maxHistoryLength));
             // TODO: We currently disable pairwise MIS in the temporal resampling pass.
             // It seems to lead to a lot of variance under camera movement.
-            defines.add("USE_PAIRWISE_MIS", "0");
+            defines.add("USE_PAIRWISE_MIS", (mOptions->CVMode!=ControlVariateMode::None)? "1" : "0");
+            defines.add("CV_MODE", std::to_string((int)mOptions->CVMode));
             // TODO: We currently skip shadow rays in the temporal resampling pass.
             // This is not always correct, need to figure out when it needs to be enabled.
-            // defines.add("UNBIASED", mOptions->unbiased ? "1" : "0");
-            defines.add("UNBIASED", "0");
+            defines.add("UNBIASED", mOptions->unbiased ? "1" : "0");
+            //defines.add("UNBIASED", "0");
 
             if (!mpTemporalResampling)
             {
@@ -709,6 +718,7 @@ namespace Falcor
 
             defines.add("NEIGHBOR_OFFSET_COUNT", std::to_string(mpNeighborOffsets->getWidth()));
             defines.add("USE_PAIRWISE_MIS", mOptions->usePairwiseMIS ? "1" : "0");
+            defines.add("CV_MODE", std::to_string((int)mOptions->CVMode));
 
             defines.add("UNBIASED", mOptions->unbiased ? "1" : "0");
 
@@ -730,7 +740,7 @@ namespace Falcor
 
             defines.add("USE_VISIBILITY", mOptions->useFinalVisibility ? "1" : "0");
             defines.add("REUSE_VISIBILITY", (mOptions->useFinalVisibility && mOptions->reuseFinalVisibility) ? "1" : "0");
-
+            defines.add("CV_MODE", std::to_string((int)mOptions->CVMode));
             if (!mpEvaluateFinalSamples)
             {
                 Program::Desc desc;
@@ -1140,6 +1150,10 @@ namespace Falcor
 
     void ScreenSpaceReSTIR::scriptBindings(pybind11::module& m)
     {
+        pybind11::enum_<ControlVariateMode> CVMode(m, "CVMode");
+            CVMode.value("Disable", ControlVariateMode::None);
+            CVMode.value("Enable", ControlVariateMode::Enable);
+            CVMode.value("STCV", ControlVariateMode::STCV);
         ScriptBindings::SerializableStruct<Options> options(m, "ScreenSpaceReSTIROptions");
 #define field(f_) field(#f_, &Options::f_)
         options.field(useReSTIRDI);

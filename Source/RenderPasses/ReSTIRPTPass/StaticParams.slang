@@ -36,6 +36,7 @@ static const uint kMISHeuristic = MIS_HEURISTIC;
 static const float kMISPowerExponent = MIS_POWER_EXPONENT;
 static const uint kShiftStrategy = SHIFT_STRATEGY;
 static const uint kSpatialReSTIRMISKind = SPATIAL_RESTIR_MIS_KIND;
+static const uint kCVMode = CONTROL_VARIATES_MODE;
 static const uint kTemporalReSTIRMISKind = TEMPORAL_RESTIR_MIS_KIND;
 static const bool kTemporalUpdateForDynamicScene = TEMPORAL_UPDATE_FOR_DYNAMIC_SCENE;
 static const int kMaximumPathLength = 15;

@@ -605,6 +605,7 @@ bool shiftAndMergeReservoir(const RestirPathTracerParams params, bool temporalUp
             if (!selected) dstReservoir.F = 0.f;
             dstReservoir.M = srcReservoir.M;
             dstReservoir.weight = srcReservoir.weight;
+            dstReservoir.accumulatedContribution = srcReservoir.accumulatedContribution;
         }
 
         return selected;
@@ -622,7 +623,11 @@ bool mergeReservoirWithResamplingMIS(const RestirPathTracerParams params, float3
     bool selected = dstReservoir.mergeWithResamplingMIS(dstIntegrand, dstJacobian, tempDstReservoir, sg, misWeight);
     return selected;
 }
-
+bool mergeWhenEmpty(const RestirPathTracerParams params, float3 dstIntegrand, float dstJacobian, inout PathReservoir dstReservoir, const PathReservoir tempDstReservoir, const PathReservoir srcReservoir, inout SampleGenerator sg, bool isSpatialReuse, float misWeight = 1.f)
+{
+    bool selected = dstReservoir.mergeWhenEmpty(dstIntegrand, dstJacobian, tempDstReservoir, sg, misWeight);
+    return selected;
+}
 bool mergeReservoir(const RestirPathTracerParams params, float3 dstIntegrand, float dstJacobian, inout PathReservoir dstReservoir, const PathReservoir tempDstReservoir, const PathReservoir srcReservoir, inout SampleGenerator sg, bool isSpatialReuse, float misWeight = 1.f)
 {
     bool selected = dstReservoir.merge(dstIntegrand, dstJacobian, tempDstReservoir, sg, misWeight);

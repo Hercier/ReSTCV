@@ -29,8 +29,8 @@ struct PrepareSurfaceData
         if (loadShadingData(pixel, frameDim, gScene.camera, vbuffer, sd))
         {
             float depth = distance(gScene.camera.getPosition(), sd.posW);
-            float diffuseWeight = luminance(sd.diffuse);
-            float specularWeight = luminance(sd.specular);
+            float diffuseWeight = (1 - sd.diffuseTransmission) * (1.f - sd.specularTransmission) * luminance(sd.diffuse);
+            float specularWeight = (1.f - sd.specularTransmission)*luminance(sd.getSpecularAlbedo());
             screenSpaceReSTIR.setSurfaceData(pixel, sd.computeNewRayOrigin(), depth, sd.N, sd.faceN, diffuseWeight, specularWeight, sd.linearRoughness);
         }
         else

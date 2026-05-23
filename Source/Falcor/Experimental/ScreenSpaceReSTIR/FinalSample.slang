@@ -20,7 +20,7 @@ struct PackedFinalSample
     float3 dir;
     float distance;
     float3 Li;
-    float _pad;
+    float3 contribution;
 };
 #endif
 
@@ -31,7 +31,7 @@ struct FinalSample
     float3 dir;     ///< Direction to the sampled light in world-space.
     float distance; ///< Distance to the sampled light.
     float3 Li;      ///< Weighted incident radiance.
-
+    float3 contribution;
     static FinalSample createFromPacked(const PackedFinalSample packed)
     {
         FinalSample finalSample;
@@ -51,7 +51,7 @@ struct FinalSample
         packed.dir = dir;
         packed.distance = distance;
         packed.Li = Li;
-        packed._pad = 0.f;
+        packed.contribution = contribution;
 #endif
         return packed;
     }
@@ -66,6 +66,7 @@ struct FinalSample
         dir = packed.dir;
         distance = packed.distance;
         Li = packed.Li;
+        contribution = packed.contribution;
 #endif
     }
 };

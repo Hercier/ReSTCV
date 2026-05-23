@@ -81,7 +81,18 @@ struct PathRetracePass
 
     int getNeighborCount()
     {
-        return gNeighborCount; // does not include self
+        if (SpatialReusePattern(gSpatialReusePattern) == SpatialReusePattern::Default)
+        {
+            return gNeighborCount; // does not include self
+        }
+
+        if (gSmallWindowRadius == 0)
+        {
+            return 4; // 4-connectivity
+        }
+
+        int smallWindowDiameter = 2 * gSmallWindowRadius + 1;
+        return smallWindowDiameter * smallWindowDiameter; // includes center index; getNextNeighborPixel rejects it
     }
 
     int2 getNextNeighborPixel(const uint startIndex, int2 pixel, int i)
@@ -95,10 +106,16 @@ struct PathRetracePass
         }
         else if (SpatialReusePattern(gSpatialReusePattern) == SpatialReusePattern::SmallWindow)
         {
+            if (gSmallWindowRadius == 0) {
+                // neighbor pixel is adjacent pixels (4-connectivity)
+                neighborPixel = pixel + int2((i == 0) ? -1 : (i == 1) ? 1 : 0, (i == 2) ? -1 : (i == 3) ? 1 : 0);
+            }
+            else {
             int smallWindowDiameter = 2 * gSmallWindowRadius + 1;
             neighborPixel = pixel + int2(-gSmallWindowRadius + (i % smallWindowDiameter),
                 -gSmallWindowRadius + (i / smallWindowDiameter));
             if (all(neighborPixel == pixel)) neighborPixel = int2(-1);
+            }
         }
 
         return neighborPixel;

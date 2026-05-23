@@ -15,7 +15,14 @@ __exported import LightSample;
 #if USE_COMPACT_RESERVOIR
 typedef uint2 PackedReservoir;
 #else
-typedef uint4 PackedReservoir;
+//typedef uint4 PackedReservoir;
+struct PackedReservoir
+{
+    float3 accumulatedContribution;
+    float weight;
+    uint M;
+    uint lightSampleData;
+};
 #endif
 
 /** Represents a reservoir containing a weighted light sample obtained through resampled importance sampling.
@@ -25,10 +32,10 @@ struct Reservoir
     LightSample lightSample;    ///< Selected light sample.
     uint M;                     ///< Number of samples seen so far.
     float weight;               ///< Probabilistic weight.
-
+    float3 accumulatedContribution;
     static Reservoir createEmpty()
     {
-        return { LightSample::createInvalid(), 0.f, 0.f };
+        return { LightSample::createInvalid(), 0.f, 0.f,0.f,0.f };
     }
 
     static Reservoir createFromPacked(const PackedReservoir packed)
@@ -50,10 +57,10 @@ struct Reservoir
         packed.x = uint(lightSample.pack());
         packed.y = f32tof16(weight) | (clamp(M, 0, 0xffff) << 16);
 #else
-        packed.x = lightSample.pack();
-        packed.y = asuint(weight);
-        packed.z = M;
-        packed.w = 0;
+        packed.lightSampleData = lightSample.pack();
+        packed.weight=weight;
+        packed.M=M;
+        packed.accumulatedContribution = accumulatedContribution;
 #endif
         return packed;
     }
@@ -65,16 +72,17 @@ struct Reservoir
         weight = f16tof32(packed.y & 0xffff);
         M = packed.y >> 16;
 #else
-        lightSample.unpack(packed.x);
-        weight = asfloat(packed.y);
-        M = packed.z;
+        lightSample.unpack(packed.lightSampleData);
+        weight = packed.weight;
+        M = packed.M;
+        accumulatedContribution = packed.accumulatedContribution;
 #endif
         // Replace with empty reservoir if invalid.
         if (isinf(weight) || isnan(weight))
         {
             lightSample = LightSample::createInvalid();
             weight = 0.f;
-            M = 0.f;
+            //M = 0.f;
         }
     }
 };

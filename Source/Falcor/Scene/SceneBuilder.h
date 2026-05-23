@@ -533,6 +533,12 @@ namespace Falcor
         */
         uint32_t addCamera(const Camera::SharedPtr& pCamera);
 
+        /** Add a camera with NodeID
+            \param pCamera Camera to be added.
+            \param nodeID Node ID to attach the camera to.
+            \return The camera ID
+        */
+        uint32_t addCameraNode(const Camera::SharedPtr& pCamera, uint32_t nodeID);
         /** Get the selected camera.
         */
         Camera::SharedPtr getSelectedCamera() const;

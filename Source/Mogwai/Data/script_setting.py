@@ -1,0 +1,1 @@
+from exp_config.full_render.script import *

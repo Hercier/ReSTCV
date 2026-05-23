@@ -24,6 +24,7 @@ struct RisState
     float weight;               ///< Probabilistic weight.
     float canonicalWeight;      ///< Canonical sample weight factor (required for pairwise MIS).
 
+    float3 accumulatedContribution;
     /** Create an empty RIS state.
     */
     static RisState createEmpty()
@@ -43,7 +44,10 @@ struct RisState
         reservoir.lightSample = lightSample;
         reservoir.weight = weight;
         reservoir.M = uint(M);
-        if (isinf(reservoir.weight) || isnan(reservoir.weight)) reservoir = Reservoir::createEmpty();
+        reservoir.accumulatedContribution = accumulatedContribution;
+        if (isinf(reservoir.weight) || isnan(reservoir.weight)) {
+            reservoir.weight = 0.f;
+        }
         return reservoir;
     }
 };
@@ -65,7 +69,6 @@ bool streamingResampleStep<S : ISampleGenerator>(inout RisState state, const Lig
 
     state.weightSum += sampleWeight;
     state.M += 1.f;
-
     bool selectSample = sampleNext1D(sg) * state.weightSum < sampleWeight;
 
     if (selectSample)
@@ -130,31 +133,45 @@ float mFactor(float q0, float q1)
 
 float pairwiseMisWeight(float q0, float q1, float N0, float N1)
 {
-    return (q1 == 0.f) ? 0.f : (N0 * q0) / (q0 * N0 + q1 * N1);
+    return (q0 * N0 + q1 * N1==0.f) ? 0.f : (N0 * q0) / (q0 * N0 + q1 * N1);
 }
 
 bool streamingResampleStepMis<S : ISampleGenerator>(
     inout RisState state,
-    const Reservoir canonicalReservoir, const LoadedLightSample canonicalLightSample, float canonicalTargetPdf, const EvalContext canonicalContext,
+    const Reservoir canonicalReservoir, const LoadedLightSample canonicalLightSample, float2 canonicalTargetPdfWithBGV, const EvalContext canonicalContext,
     const Reservoir candidateReservoir, const EvalContext candidateContext,
     uint k,
     const Lights lights,
-    inout S sg)
+    inout S sg,
+    const bool useControlledContribution = false) 
 {
     const LoadedLightSample candidateLightSample = lights.loadLightSample(candidateReservoir.lightSample);
-
-    float candidateTargetPdf = candidateContext.evalTargetFunction(candidateLightSample);
-    float candidateTargetPdfAtOther = canonicalContext.evalTargetFunction(candidateLightSample);
-    float canonicalTargetPdfAtOther = candidateContext.evalTargetFunction(canonicalLightSample);
-
+    float2 candidatePdfwithBGV = candidateContext.evalTargetFunctionWithBGV(candidateLightSample);
+    float2 candidatePdfwithBGVAtOther = canonicalContext.evalTargetFunctionWithBGV(candidateLightSample);
+    float2 canonicalPdfwithBGVAtOther = candidateContext.evalTargetFunctionWithBGV(canonicalLightSample);
+    float candidateTargetPdf = candidatePdfwithBGV.x;
+    float canonicalTargetPdf = canonicalTargetPdfWithBGV.x;
+    float candidateTargetPdfAtOther = candidatePdfwithBGVAtOther.x;
+    float canonicalTargetPdfAtOther = canonicalPdfwithBGVAtOther.x;
+    float3 canonicalRadiance = canonicalTargetPdfWithBGV.y * lights.evalEmission(canonicalLightSample.lightSample);
+    float3 candidateRadiance = candidatePdfwithBGV.y * lights.evalEmission(candidateLightSample.lightSample);
+    float3 candidateRadianceAtOther = candidatePdfwithBGVAtOther.y * lights.evalEmission(candidateLightSample.lightSample);
+    float3 canonicalRadianceAtOther = canonicalPdfwithBGVAtOther.y * lights.evalEmission(canonicalLightSample.lightSample);
     float m0 =       pairwiseMisWeight(candidateTargetPdf,        candidateTargetPdfAtOther, candidateReservoir.M * k, canonicalReservoir.M);
     float m1 = 1.f - pairwiseMisWeight(canonicalTargetPdfAtOther, canonicalTargetPdf,        candidateReservoir.M * k, canonicalReservoir.M);
 
     float sampleWeight = candidateTargetPdfAtOther * candidateReservoir.weight * m0;
-    state.M += candidateReservoir.M * min(mFactor(candidateTargetPdf, candidateTargetPdfAtOther), mFactor(canonicalTargetPdfAtOther, canonicalTargetPdf));
+    uint addM = candidateReservoir.M * min(mFactor(candidateTargetPdf, candidateTargetPdfAtOther), mFactor(canonicalTargetPdfAtOther, canonicalTargetPdf));
+    if (useControlledContribution) {
+        state.accumulatedContribution += (candidateReservoir.accumulatedContribution + (candidateRadianceAtOther)*candidateReservoir.weight * m0 + (canonicalRadiance)*m1 * canonicalReservoir.weight) * addM;
+    }
+    else {
+        state.accumulatedContribution += (candidateReservoir.accumulatedContribution + (candidateRadianceAtOther - candidateRadiance) * candidateReservoir.weight * m0 + (canonicalRadiance - canonicalRadianceAtOther) * m1 * canonicalReservoir.weight) * addM;
+    }
+    state.accumulatedContribution = isfinite(state.accumulatedContribution) ? state.accumulatedContribution : float3(0.f);
+    state.M += addM;
     state.weightSum += sampleWeight;
     state.canonicalWeight += m1;
-
     bool selectSample = sampleNext1D(sg) * state.weightSum < sampleWeight;
 
     if (selectSample)
@@ -169,29 +186,51 @@ bool streamingResampleStepMis<S : ISampleGenerator>(
 
 bool streamingResampleStepMisUnbiased<S : ISampleGenerator>(
     inout RisState state,
-    const Reservoir canonicalReservoir, const LoadedLightSample canonicalLightSample, float canonicalTargetPdf, const EvalContext canonicalContext,
+    const Reservoir canonicalReservoir, const LoadedLightSample canonicalLightSample, float2 canonicalTargetPdfWithBGV, const EvalContext canonicalContext,
     const Reservoir candidateReservoir, const EvalContext candidateContext,
     uint k,
     const Lights lights,
-    inout S sg)
+    inout S sg,
+    const bool useControlledContribution = false)
 {
     const LoadedLightSample candidateLightSample = lights.loadLightSample(candidateReservoir.lightSample);
-
-    float candidateTargetPdf = candidateContext.evalTargetFunction(candidateLightSample);
-    float candidateTargetPdfAtOther = canonicalContext.evalTargetFunction(candidateLightSample);;
-    float canonicalTargetPdfAtOther = candidateContext.evalTargetFunction(canonicalLightSample);
-
+    float2 candidatePdfwithBGV= candidateContext.evalTargetFunctionWithBGV(candidateLightSample);
+    float2 candidatePdfwithBGVAtOther= canonicalContext.evalTargetFunctionWithBGV(candidateLightSample);
+    float2 canonicalPdfwithBGVAtOther= candidateContext.evalTargetFunctionWithBGV(canonicalLightSample);
+    float candidateTargetPdf = candidatePdfwithBGV.x;
+    float canonicalTargetPdf = canonicalTargetPdfWithBGV.x;
+    float candidateTargetPdfAtOther = candidatePdfwithBGVAtOther.x;
+    float canonicalTargetPdfAtOther = canonicalPdfwithBGVAtOther.x;
+    float3 canonicalRadiance = canonicalTargetPdfWithBGV.y * lights.evalEmission(canonicalLightSample.lightSample);
+    float3 candidateRadiance = candidatePdfwithBGV.y * lights.evalEmission(candidateLightSample.lightSample);
+    float3 candidateRadianceAtOther = candidatePdfwithBGVAtOther.y * lights.evalEmission(candidateLightSample.lightSample);
     float canonicalVisibility = canonicalContext.evalVisibility(candidateLightSample);
-    float candidateVisibility = candidateContext.evalVisibility(canonicalLightSample);
-
+    float candidateVisibility = 0.f;
+    if (useControlledContribution) {//when temporal, visibility may not
+        candidateVisibility = canonicalReservoir.weight == 0.f ? 0.f : 1.f;
+    }
+    else {
+        candidateVisibility = candidateContext.evalVisibility(canonicalLightSample);
+    }
+    uint addM = candidateReservoir.M;//* min(mFactor(candidateTargetPdf, candidateTargetPdfAtOther), mFactor(canonicalTargetPdfAtOther, canonicalTargetPdf));
     candidateTargetPdfAtOther *= canonicalVisibility;
     canonicalTargetPdfAtOther *= candidateVisibility;
 
+    candidateRadianceAtOther *= canonicalVisibility;
     float m0 = pairwiseMisWeight(candidateTargetPdf, candidateTargetPdfAtOther, candidateReservoir.M * k, canonicalReservoir.M);
     float m1 = 1.f - pairwiseMisWeight(canonicalTargetPdfAtOther, canonicalTargetPdf, candidateReservoir.M * k, canonicalReservoir.M);
-
+    if (useControlledContribution) {
+        state.accumulatedContribution += (candidateReservoir.accumulatedContribution + (candidateRadianceAtOther) * candidateReservoir.weight * m0 + (canonicalRadiance) * m1 * canonicalReservoir.weight) * addM;
+    }
+    else {
+        float3 canonicalRadianceAtOther = canonicalPdfwithBGVAtOther.y * lights.evalEmission(canonicalLightSample.lightSample);
+        canonicalRadianceAtOther *= candidateVisibility;
+        state.accumulatedContribution += (candidateReservoir.accumulatedContribution + (candidateRadianceAtOther - candidateRadiance)*candidateReservoir.weight * m0 + (canonicalRadiance- canonicalRadianceAtOther) * m1 *canonicalReservoir.weight) * addM;
+    }
+    state.accumulatedContribution=isfinite(state.accumulatedContribution)?state.accumulatedContribution:float3(0.f);
+    
     float sampleWeight = candidateTargetPdfAtOther * candidateReservoir.weight * m0;
-    state.M += candidateReservoir.M * min(mFactor(candidateTargetPdf, candidateTargetPdfAtOther), mFactor(canonicalTargetPdfAtOther, canonicalTargetPdf));
+    state.M += addM;
     state.weightSum += sampleWeight;
     state.canonicalWeight += m1;
 
@@ -217,7 +256,7 @@ bool streamingResampleFinalizeMis<S : ISampleGenerator>(inout RisState state, co
     state.weightSum += sampleWeight;
 
     bool selectSample = sampleNext1D(sg) * state.weightSum < sampleWeight;
-
+    state.accumulatedContribution+=canonicalReservoir.accumulatedContribution*canonicalReservoir.M;
     if (selectSample)
     {
         state.lightSample = canonicalReservoir.lightSample;

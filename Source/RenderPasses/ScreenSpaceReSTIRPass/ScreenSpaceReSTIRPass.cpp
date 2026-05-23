@@ -29,6 +29,7 @@ namespace
     const Falcor::ChannelList kOutputChannels =
     {
         { "color",                  "gColor",                   "Final color",              true /* optional */, ResourceFormat::RGBA32Float },
+        { "normal",                 "gNormal",                  "Shading normal",           true /* optional */, ResourceFormat::RGBA32Float },
         { "emission",               "gEmission",                "Emissive color",           true /* optional */, ResourceFormat::RGBA32Float },
         { "diffuseIllumination",    "gDiffuseIllumination",     "Diffuse illumination",     true /* optional */, ResourceFormat::RGBA32Float },
         { "diffuseReflectance",     "gDiffuseReflectance",      "Diffuse reflectance",      true /* optional */, ResourceFormat::RGBA32Float },
@@ -40,6 +41,7 @@ namespace
     // Scripting options.
     const char* kOptions = "options";
     const char* kNumReSTIRInstances = "NumReSTIRInstances";
+    const char* kCVMode = "CVMode";
 }
 
 // Don't remove this. it's required for hot-reload to function properly
@@ -51,6 +53,8 @@ extern "C" __declspec(dllexport) const char* getProjDir()
 extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary & lib)
 {
     lib.registerClass("ScreenSpaceReSTIRPass", kDesc, ScreenSpaceReSTIRPass::create);
+    ScriptBindings::registerBinding(ScreenSpaceReSTIR::scriptBindings);
+
 }
 
 std::string ScreenSpaceReSTIRPass::getDesc() { return kDesc; }
@@ -72,6 +76,7 @@ void ScreenSpaceReSTIRPass::parseDictionary(const Dictionary& dict)
     {
         if (key == kOptions) options = value;
         else if (key == kNumReSTIRInstances) mNumReSTIRInstances = value;
+        else if (key == kCVMode) options.CVMode = value;
         else logWarning("Unknown field '" + key + "' in ScreenSpaceReSTIRPass dictionary");
     }
     mOptions = ScreenSpaceReSTIR::Options::create(options);

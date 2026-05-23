@@ -121,6 +121,15 @@ struct ScreenSpaceReSTIR
         Li = finalSample.Li;
         return distance > 0.f;
     }
+    bool getFinalSamplewithCV(uint2 pixel, out float3 dir, out float distance, out float3 Li,out float3 contribution, bool useSecond = false)
+    {
+        FinalSample finalSample = FinalSample::createFromPacked(finalSamples[getPixelIndex(pixel)]);
+        dir = finalSample.dir;
+        distance = finalSample.distance;
+        Li = finalSample.Li;
+        contribution = finalSample.contribution;
+        return distance > 0.f;
+    }
 
     /** Write initial sample for ReSTIR GI.
         \param[in] pixel Pixel coordinate.

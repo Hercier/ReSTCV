@@ -17,6 +17,9 @@ namespace
     const std::string kSpatialPathRetraceFile = "RenderPasses/ReSTIRPTPass/SpatialPathRetrace.cs.slang";
     const std::string kTemporalPathRetraceFile = "RenderPasses/ReSTIRPTPass/TemporalPathRetrace.cs.slang";
     const std::string kComputePathReuseMISWeightsFile = "RenderPasses/ReSTIRPTPass/ComputePathReuseMISWeights.cs.slang";
+    constexpr uint32_t kReconnectionDataSizeBytes = 40;
+    constexpr uint32_t kReconnectionDataPadEntrySizeBytes = 16;
+    constexpr uint32_t kReconnectionDataAlignmentBytes = 256;
 
     // Render pass inputs and outputs.
     const std::string kInputVBuffer = "vbuffer";
@@ -29,6 +32,11 @@ namespace
         { kInputMotionVectors,  "gMotionVectors",   "Motion vector buffer (float format)", true /* optional */, ResourceFormat::RG32Float },
         { kInputDirectLighting,    "gDirectLighting",     "Sample count buffer (integer format)", true /* optional */, ResourceFormat::RGBA32Float },
     };
+
+    uint32_t alignUp(uint32_t value, uint32_t alignment)
+    {
+        return ((value + alignment - 1) / alignment) * alignment;
+    }
 
     const std::string kOutputColor = "color";
     const std::string kOutputAlbedo = "albedo";
@@ -96,6 +104,14 @@ namespace
         { (uint32_t)ReSTIRMISKind::Pairwise, "Pairwise resampling MIS" },
         { (uint32_t)ReSTIRMISKind::ConstantBinary, "Constant resampling MIS (with 1/|Z| contribution MIS)" },
         { (uint32_t)ReSTIRMISKind::ConstantBiased, "Constant resampling MIS (constant contribution MIS, biased)" },
+    };
+    const Gui::DropdownList kReSTIRCVModeList =
+    {
+        { (uint32_t)ReSTIRCVMode::Disable , "Disable" },
+        { (uint32_t)ReSTIRCVMode::Decoupled, "Decoupled shading" },
+        { (uint32_t)ReSTIRCVMode::ReSTCV, "ReSTCV" },
+        { (uint32_t)ReSTIRCVMode::ConstRatio, "constant-ratio ReSTCV" },
+        { (uint32_t)ReSTIRCVMode::STCV, "STCV" },
     };
 
     const Gui::DropdownList kReSTIRMISList2 =
@@ -173,6 +189,7 @@ namespace
 
     const std::string kSpatialMisKind = "spatialMisKind";
     const std::string kTemporalMisKind = "temporalMisKind";
+    const std::string kCVMode = "CVMode";
     const std::string kShiftStrategy = "shiftStrategy";
     const std::string kRejectShiftBasedOnJacobian = "rejectShiftBasedOnJacobian";
     const std::string kJacobianRejectionThreshold = "jacobianRejectionThreshold";
@@ -184,6 +201,7 @@ namespace
     const std::string kSeedOffset = "seedOffset";
     const std::string kEnableTemporalReuse = "enableTemporalReuse";
     const std::string kEnableSpatialReuse = "enableSpatialReuse";
+    const std::string kSpatialUpdateRounds = "spatialUpdateRounds";
     const std::string kNumSpatialRounds = "numSpatialRounds";
     const std::string kPathSamplingMode = "pathSamplingMode";
     const std::string kEnableTemporalReprojection = "enableTemporalReprojection";
@@ -261,6 +279,13 @@ void ReSTIRPTPass::registerBindings(pybind11::module& m)
     misKind.value("Pairwise", ReSTIRMISKind::Pairwise);
     misKind.value("ConstantBinary", ReSTIRMISKind::ConstantBinary);
     misKind.value("ConstantBiased", ReSTIRMISKind::ConstantBiased);
+
+    pybind11::enum_<ReSTIRCVMode> cvMode(m, "ReSTIRCVMode");
+    cvMode.value("Disable", ReSTIRCVMode::Disable);
+    cvMode.value("Decoupled", ReSTIRCVMode::Decoupled);
+    cvMode.value("ReSTCV", ReSTIRCVMode::ReSTCV);
+    cvMode.value("ConstRatio", ReSTIRCVMode::ConstRatio);
+    cvMode.value("STCV", ReSTIRCVMode::STCV);
 
     pybind11::enum_<PathSamplingMode> pathSamplingMode(m, "PathSamplingMode");
     pathSamplingMode.value("ReSTIR", PathSamplingMode::ReSTIR);
@@ -416,6 +441,7 @@ bool ReSTIRPTPass::parseDictionary(const Dictionary& dict)
         else if (key == kLightBVHOptions) mLightBVHOptions = value;
         else if (key == kSpatialMisKind) mStaticParams.spatialMisKind = value;
         else if (key == kTemporalMisKind) mStaticParams.temporalMisKind = value;
+        else if (key == kCVMode) mStaticParams.CVMode = value;
         else if (key == kShiftStrategy) mStaticParams.shiftStrategy = value;
         else if (key == kRejectShiftBasedOnJacobian) mParams.rejectShiftBasedOnJacobian = value;
         else if (key == kJacobianRejectionThreshold) mParams.jacobianRejectionThreshold = value;
@@ -426,6 +452,7 @@ bool ReSTIRPTPass::parseDictionary(const Dictionary& dict)
         else if (key == kEnableTemporalReuse) mEnableTemporalReuse = value;
         else if (key == kEnableSpatialReuse) mEnableSpatialReuse = value;
         else if (key == kNumSpatialRounds) mNumSpatialRounds = value;
+        else if (key == kSpatialUpdateRounds) mSpatialUpdateRounds = value;
         else if (key == kPathSamplingMode) mStaticParams.pathSamplingMode = value;
         else if (key == kLocalStrategyType) mParams.localStrategyType = value;
         else if (key == kEnableTemporalReprojection) mEnableTemporalReprojection = value;
@@ -570,6 +597,7 @@ Dictionary ReSTIRPTPass::getScriptingDictionary()
     if (mStaticParams.emissiveSampler == EmissiveLightSamplerType::LightBVH) d[kLightBVHOptions] = mLightBVHOptions;
     d[kSpatialMisKind] = mStaticParams.spatialMisKind;
     d[kTemporalMisKind] = mStaticParams.temporalMisKind;
+    d[kCVMode] = mStaticParams.CVMode;
     d[kShiftStrategy] = mStaticParams.shiftStrategy;
     d[kRejectShiftBasedOnJacobian] = mParams.rejectShiftBasedOnJacobian;
     d[kJacobianRejectionThreshold] = mParams.jacobianRejectionThreshold;
@@ -580,6 +608,7 @@ Dictionary ReSTIRPTPass::getScriptingDictionary()
     d[kEnableTemporalReuse] = mEnableSpatialReuse;
     d[kEnableSpatialReuse] = mEnableTemporalReuse;
     d[kNumSpatialRounds] = mNumSpatialRounds;
+    d[kSpatialUpdateRounds] = mSpatialUpdateRounds;
     d[kPathSamplingMode] = mStaticParams.pathSamplingMode;
     d[kLocalStrategyType] = mParams.localStrategyType;
     d[kEnableTemporalReprojection] = mEnableTemporalReprojection;
@@ -606,6 +635,7 @@ Dictionary ReSTIRPTPass::getSpecializedScriptingDictionary()
     d[kMaxSurfaceBounces] = mStaticParams.maxSurfaceBounces;
     d[kSpatialMisKind] = mStaticParams.spatialMisKind;
     d[kTemporalMisKind] = mStaticParams.temporalMisKind;
+    d[kCVMode] = mStaticParams.CVMode;
     d[kShiftStrategy] = mStaticParams.shiftStrategy;
 
     return d;
@@ -732,7 +762,7 @@ void ReSTIRPTPass::execute(RenderContext* pRenderContext, const RenderData& rend
                 tracePass(pRenderContext, renderData, mpTracePass, "tracePass", 0);
             }
         }
-
+        float varD=1.f;//variance of difference estimator, constant 1.f for now
         if (mStaticParams.pathSamplingMode != PathSamplingMode::PathTracing)
         {
             // Launch restir merge pass.
@@ -744,6 +774,10 @@ void ReSTIRPTPass::execute(RenderContext* pRenderContext, const RenderData& rend
                         PathRetracePass(pRenderContext, restir_i, renderData, true, 0);
                     // a separate pass to trace rays for hybrid shift/random number replay
                     PathReusePass(pRenderContext, restir_i, renderData, true, 0, !mEnableSpatialReuse);
+                    varF+=varD;
+                }
+                else{//no temporal reuse
+                    varF=mTemporalHistoryLength*1.5f;
                 }
             }
             else if (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse)
@@ -759,7 +793,23 @@ void ReSTIRPTPass::execute(RenderContext* pRenderContext, const RenderData& rend
                     // a separate pass to trace rays for hybrid shift/random number replay
                     if (mStaticParams.shiftStrategy == ShiftMapping::Hybrid)
                         PathRetracePass(pRenderContext, restir_i, renderData, false, spatialRoundId);
-                    PathReusePass(pRenderContext, restir_i, renderData, false, spatialRoundId, spatialRoundId == mNumSpatialRounds - 1);
+                    float k=(varF+varD)/varF;
+                    if(mStaticParams.CVMode!=ReSTIRCVMode::Disable && mStaticParams.CVMode!=ReSTIRCVMode::Decoupled){
+                        float NN=getEffectiveSpatialNeighborCount()*(mFeatureBasedRejection?0.8f:1.0f);//estimated number of neighbors;
+                        varF=varF*((k/(k+NN))*(k/(k+NN)))+NN*(varF+varD)/((k+NN)*(k+NN));
+                        //printf("After spatial round %d, varF=%f,k=%f\n",spatialRoundId,varF,k);
+                    }
+                    PathReusePass(pRenderContext, restir_i, renderData, false, spatialRoundId, spatialRoundId == mNumSpatialRounds - 1, 0,k);
+                    for(int updateId = 1; updateId < mSpatialUpdateRounds; updateId++){
+                        //use Image-space control variates estimation
+                        float k=(varF+varD)/varF;
+                        if(mStaticParams.CVMode!=ReSTIRCVMode::Disable && mStaticParams.CVMode!=ReSTIRCVMode::Decoupled){
+                            float NN=getEffectiveSpatialNeighborCount()*(mFeatureBasedRejection?0.8f:1.0f);//estimated number of neighbors;
+                            varF=varF*((k/(k+NN))*(k/(k+NN)))+NN*(varF+varD)/((k+NN)*(k+NN));
+                        }
+                        PathReusePass(pRenderContext, restir_i, renderData, false, spatialRoundId, spatialRoundId == mNumSpatialRounds - 1, updateId,k);
+                    }
+
                 }
             }
 
@@ -768,7 +818,7 @@ void ReSTIRPTPass::execute(RenderContext* pRenderContext, const RenderData& rend
 
             if (mEnableTemporalReuse && mStaticParams.pathSamplingMode == PathSamplingMode::ReSTIR)
             {
-                if ((!mEnableSpatialReuse || mNumSpatialRounds % 2 == 0))
+                if ((!mEnableSpatialReuse || mNumSpatialRounds * mSpatialUpdateRounds % 2 == 0))
                     pRenderContext->copyResource(mpTemporalReservoirs[restir_i].get(), mpOutputReservoirs.get());
                 if (restir_i == numPasses - 1)
                     pRenderContext->copyResource(mpTemporalVBuffer.get(), renderData[kInputVBuffer].get());
@@ -825,6 +875,47 @@ Texture::SharedPtr ReSTIRPTPass::createNeighborOffsetTexture(uint32_t sampleCoun
     return Texture::create1D(sampleCount, ResourceFormat::RG8Snorm, 1, 1, offsets.get());
 }
 
+uint32_t ReSTIRPTPass::getEffectiveSpatialNeighborCount() const
+{
+    if (!mEnableSpatialReuse) return 0;
+
+    if (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse)
+        return 16; // Bekaert-style path reuse uses a fixed 4x4 block.
+
+    if (mStaticParams.pathSamplingMode != PathSamplingMode::ReSTIR)
+        return 0;
+
+    if (mSpatialReusePattern == SpatialReusePattern::SmallWindow)
+    {
+        if (mSmallWindowRestirWindowRadius == 0) return 4; // 4-connected neighborhood.
+
+        const uint32_t diameter = 2 * mSmallWindowRestirWindowRadius + 1;
+        return diameter * diameter;
+    }
+
+    return static_cast<uint32_t>(std::max(mSpatialNeighborCount, 0));
+}
+
+uint32_t ReSTIRPTPass::getReconnectionDataPathCount() const
+{
+    // Temporal hybrid reuse needs two slots. Spatial hybrid reuse needs two slots per
+    // neighbor index because it caches both shift directions for later reuse.
+    return std::max(2u, 2u * getEffectiveSpatialNeighborCount());
+}
+
+uint32_t ReSTIRPTPass::getReconnectionDataPadSize() const
+{
+    const uint32_t dataBytes = getReconnectionDataPathCount() * kReconnectionDataSizeBytes;
+    const uint32_t alignedBytes = alignUp(dataBytes, kReconnectionDataAlignmentBytes);
+    return (alignedBytes - dataBytes) / kReconnectionDataPadEntrySizeBytes;
+}
+
+uint32_t ReSTIRPTPass::getReconnectionDataElementSize() const
+{
+    return getReconnectionDataPathCount() * kReconnectionDataSizeBytes +
+        getReconnectionDataPadSize() * kReconnectionDataPadEntrySizeBytes;
+}
+
 bool ReSTIRPTPass::renderRenderingUI(Gui::Widgets& widget)
 {
     bool dirty = false;
@@ -865,6 +956,7 @@ bool ReSTIRPTPass::renderRenderingUI(Gui::Widgets& widget)
             if (widget.button("Clean Reservoirs"))
             {
                 mReservoirFrameCount = 0;
+                varF=mTemporalHistoryLength*1.5f;//assume histoorylength perfectly balance the varF+varD and initial sample, now varF=initial varaince;
             }
 
             dirty |= widget.var("Candidate Samples", mStaticParams.candidateSamples, 1u, 64u);
@@ -913,6 +1005,7 @@ bool ReSTIRPTPass::renderRenderingUI(Gui::Widgets& widget)
         {
             dirty |= widget.checkbox("Spatial Reuse", mEnableSpatialReuse);
             dirty |= widget.checkbox("Temporal Reuse", mEnableTemporalReuse);
+            dirty |= widget.dropdown("Control Variates Mode", kReSTIRCVModeList, reinterpret_cast<uint32_t&>(mStaticParams.CVMode));
         }
 
         if (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse)
@@ -923,7 +1016,8 @@ bool ReSTIRPTPass::renderRenderingUI(Gui::Widgets& widget)
         {
             if (auto group = widget.group("Spatial reuse controls", true))
             {
-                dirty |= widget.var("Num Spatial Rounds", mNumSpatialRounds, 1, 5);
+                dirty |= widget.var("Num Spatial Rounds", mNumSpatialRounds, 1, 20);
+                dirty |= widget.var("Spatial Update Rounds", mSpatialUpdateRounds, 1, 20);
                 dirty |= widget.dropdown("Spatial Reuse Pattern", kSpatialReusePatternList, reinterpret_cast<uint32_t&>(mSpatialReusePattern));
                 dirty |= widget.checkbox("Feature-based rejection", mFeatureBasedRejection);
 
@@ -946,7 +1040,7 @@ bool ReSTIRPTPass::renderRenderingUI(Gui::Widgets& widget)
         {
             if (auto group = widget.group("Temporal reuse controls", true))
             {
-                dirty |= widget.var("Temporal History Length", mTemporalHistoryLength, 0, 100);
+                dirty |= widget.var("Temporal History Length", mTemporalHistoryLength, 0, 1000000);
                 dirty |= widget.checkbox("Use M capping", mUseMaxHistory);
                 dirty |= widget.checkbox("Temporal Reprojection", mEnableTemporalReprojection);
                 dirty |= widget.checkbox("Temporal Update for Dynamic Scenes", mStaticParams.temporalUpdateForDynamicScene);
@@ -1154,7 +1248,7 @@ void ReSTIRPTPass::updatePrograms()
 {
     if (mRecompile == false) return;
 
-    mStaticParams.rcDataOfflineMode = mSpatialNeighborCount > 3 && mStaticParams.shiftStrategy == ShiftMapping::Hybrid;
+    mStaticParams.rcDataOfflineMode = getEffectiveSpatialNeighborCount() > 3 && mStaticParams.shiftStrategy == ShiftMapping::Hybrid;
 
     auto defines = mStaticParams.getDefines(*this);
 
@@ -1190,27 +1284,24 @@ void ReSTIRPTPass::prepareResources(RenderContext* pRenderContext, const RenderD
     // If we don't have a fixed sample count, assume the worst case.
     uint32_t tileCount = mParams.screenTiles.x * mParams.screenTiles.y;
     const uint32_t reservoirCount = tileCount * kScreenTileDim.x * kScreenTileDim.y;
-    const uint32_t screenPixelCount = mParams.frameDim.x * mParams.frameDim.y;
-    const uint32_t sampleCount = reservoirCount; // we are effectively only using 1spp for ReSTIR
-
     auto var = mpReflectTypes->getRootVar();
-
     if (mStaticParams.pathSamplingMode != PathSamplingMode::PathTracing)
     {
 
+        const uint32_t reconnectionDataElementSize = getReconnectionDataElementSize();
         if (mStaticParams.shiftStrategy == ShiftMapping::Hybrid && (!mReconnectionDataBuffer ||
-            mStaticParams.rcDataOfflineMode && mReconnectionDataBuffer->getElementSize() != 512 ||
-            !mStaticParams.rcDataOfflineMode && mReconnectionDataBuffer->getElementSize() != 256))
+            mReconnectionDataBuffer->getElementCount() != reservoirCount ||
+            mReconnectionDataBuffer->getElementSize() != reconnectionDataElementSize))
         {
             mReconnectionDataBuffer = Buffer::createStructured(var["reconnectionDataBuffer"], reservoirCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
             //printf("rcDataSize size: %d\n", mReconnectionDataBuffer->getElementSize());
+            mVarsChanged = true;
         }
         if (mStaticParams.shiftStrategy != ShiftMapping::Hybrid)
             mReconnectionDataBuffer = nullptr;
 
-        uint32_t baseReservoirSize = 88;
-        uint32_t pathTreeReservoirSize = 128;
-
+        uint32_t baseReservoirSize = 88+12;
+        uint32_t pathTreeReservoirSize = 128+12;
         if (mpOutputReservoirs &&
             (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse && mpOutputReservoirs->getElementSize() != pathTreeReservoirSize ||
                 mStaticParams.pathSamplingMode != PathSamplingMode::PathReuse && mpOutputReservoirs->getElementSize() != baseReservoirSize ||
@@ -1255,6 +1346,11 @@ void ReSTIRPTPass::prepareResources(RenderContext* pRenderContext, const RenderD
                 for (uint32_t i = 0; i < mStaticParams.samplesPerPixel; i++)
                     mpTemporalReservoirs[i] = Buffer::createStructured(var["outputReservoirs"], reservoirCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, nullptr, false);
             }
+            mVarsChanged = true;
+        }
+        if(!mDifferenceBuffer|| mDifferenceBuffer->getElementCount() != reservoirCount)
+        {
+            mDifferenceBuffer = Buffer::createTyped<float4>(reservoirCount, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
     }
@@ -1471,7 +1567,6 @@ bool ReSTIRPTPass::beginFrame(RenderContext* pRenderContext, const RenderData& r
     {
         mReservoirFrameCount = 0;
     }
-    // Clear outputs that need to be cleared.
     const auto& pOutputDebug = renderData[kOutputDebug]->asTexture();
     if (pOutputDebug) pRenderContext->clearUAV(pOutputDebug->getUAV().get(), float4(0.f));
 
@@ -1629,7 +1724,7 @@ void ReSTIRPTPass::tracePass(RenderContext* pRenderContext, const RenderData& re
     pass->execute(pRenderContext, uint3(frameDim, 1u));
 }
 
-void ReSTIRPTPass::PathReusePass(RenderContext* pRenderContext, uint32_t restir_i, const RenderData& renderData, bool isTemporalReuse, int spatialRoundId, bool isLastRound)
+void ReSTIRPTPass::PathReusePass(RenderContext* pRenderContext, uint32_t restir_i, const RenderData& renderData, bool isTemporalReuse, int spatialRoundId, bool isLastRound,int updateId,float centralImportance)
 {
     bool isPathReuseMISWeightComputation = spatialRoundId == -1;
 
@@ -1662,7 +1757,7 @@ void ReSTIRPTPass::PathReusePass(RenderContext* pRenderContext, uint32_t restir_
     // TODO: refactor arguments
     setShaderData(var, renderData, false, false);
 
-    var["outputReservoirs"] = spatialRoundId % 2 == 1 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
+    var["outputReservoirs"] = (spatialRoundId*(mSpatialUpdateRounds)+updateId) % 2 == 1 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
 
     if (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse)
     {
@@ -1672,7 +1767,7 @@ void ReSTIRPTPass::PathReusePass(RenderContext* pRenderContext, uint32_t restir_
     if (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse)
         var["misWeightBuffer"] = mPathReuseMISWeightBuffer;
     else if (!isPathReuseMISWeightComputation)
-        var["temporalReservoirs"] = spatialRoundId % 2 == 0 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
+        var["temporalReservoirs"] = (spatialRoundId*(mSpatialUpdateRounds)+updateId) % 2 == 0 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
     var["reconnectionDataBuffer"] = mReconnectionDataBuffer;
 
     var["gNumSpatialRounds"] = mNumSpatialRounds;
@@ -1689,7 +1784,10 @@ void ReSTIRPTPass::PathReusePass(RenderContext* pRenderContext, uint32_t restir_
     else
     {
         var["gSpatialReusePattern"] = mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse ? (uint32_t)mPathReusePattern : (uint32_t)mSpatialReusePattern;
-
+        var["differenceBuffer"] = mDifferenceBuffer;
+        var["gUpdateId"] = updateId;
+        var["gSpatialUpdateRounds"] = mSpatialUpdateRounds;
+        var["gCentralImportance"] = centralImportance;
         if (!isPathReuseMISWeightComputation)
         {
             var["gNeighborCount"] = mSpatialNeighborCount;
@@ -1753,14 +1851,14 @@ void ReSTIRPTPass::PathRetracePass(RenderContext* pRenderContext, uint32_t resti
 
     // TODO: refactor arguments
     setShaderData(var, renderData, false, false);
-    var["outputReservoirs"] = spatialRoundId % 2 == 1 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
+    var["outputReservoirs"] = (spatialRoundId*mSpatialUpdateRounds) % 2 == 1 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
 
     if (mStaticParams.pathSamplingMode == PathSamplingMode::PathReuse)
     {
         var["nRooksPattern"] = mNRooksPatternBuffer;
     }
 
-    var["temporalReservoirs"] = spatialRoundId % 2 == 0 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
+    var["temporalReservoirs"] = (spatialRoundId*mSpatialUpdateRounds) % 2 == 0 ? mpTemporalReservoirs[restir_i] : mpOutputReservoirs;
     var["reconnectionDataBuffer"] = mReconnectionDataBuffer;
     var["gNumSpatialRounds"] = mNumSpatialRounds;
 
@@ -1803,7 +1901,7 @@ Program::DefineList ReSTIRPTPass::StaticParams::getDefines(const ReSTIRPTPass& o
 
     // Path tracer configuration.
     defines.add("SAMPLES_PER_PIXEL", std::to_string(samplesPerPixel)); // 0 indicates a variable sample count
-    defines.add("CANDIDATE_SAMPLES", std::to_string(candidateSamples)); // 0 indicates a variable sample count    
+    defines.add("CANDIDATE_SAMPLES", std::to_string(candidateSamples)); // 0 indicates a variable sample count
     defines.add("MAX_SURFACE_BOUNCES", std::to_string(maxSurfaceBounces));
     defines.add("MAX_DIFFUSE_BOUNCES", std::to_string(maxDiffuseBounces));
     defines.add("MAX_SPECULAR_BOUNCES", std::to_string(maxSpecularBounces));
@@ -1851,6 +1949,8 @@ Program::DefineList ReSTIRPTPass::StaticParams::getDefines(const ReSTIRPTPass& o
     defines.add("OUTPUT_NRD_ADDITIONAL_DATA", "0");
 
     defines.add("SPATIAL_RESTIR_MIS_KIND", std::to_string((uint32_t)spatialMisKind));
+    defines.add("CONTROL_VARIATES_MODE", std::to_string((uint32_t)CVMode));
+
     defines.add("TEMPORAL_RESTIR_MIS_KIND", std::to_string((uint32_t)temporalMisKind));
 
     defines.add("TEMPORAL_UPDATE_FOR_DYNAMIC_SCENE", temporalUpdateForDynamicScene ? "1" : "0");
@@ -1859,8 +1959,8 @@ Program::DefineList ReSTIRPTPass::StaticParams::getDefines(const ReSTIRPTPass& o
 
     defines.add("SEPARATE_PATH_BSDF", separatePathBSDF ? "1" : "0");
 
-    defines.add("RCDATA_PATH_NUM", rcDataOfflineMode ? "12" : "6");
-    defines.add("RCDATA_PAD_SIZE", rcDataOfflineMode ? "2" : "1");
+    defines.add("RCDATA_PATH_NUM", std::to_string(owner.getReconnectionDataPathCount()));
+    defines.add("RCDATA_PAD_SIZE", std::to_string(owner.getReconnectionDataPadSize()));
 
     return defines;
 }

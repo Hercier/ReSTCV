@@ -27,7 +27,7 @@ struct TemporalResampling
 
     static const bool kUsePairwiseMIS = USE_PAIRWISE_MIS;
     static const bool kUnbiased = UNBIASED;
-
+    static const uint kCVMode = CV_MODE;
     static const DebugOutput kDebugOutput = DebugOutput(DEBUG_OUTPUT);
 
     [root] StructuredBuffer<PackedSurfaceData> surfaceData;
@@ -54,7 +54,7 @@ struct TemporalResampling
         if (any(pixel >= frameDim)) return;
 
         printSetPixel(pixel);
-
+        
         if (kDebugOutput == DebugOutput::TemporalReuse) debugOutput[pixel] = float4(1.f, 0.f, 0.f, 0.f);
 
         const uint pixelIndex = getPixelIndex(pixel);
@@ -71,7 +71,7 @@ struct TemporalResampling
         if (!currentContext.isValid()) return;
 
         // Setup evaluation context for back-projected pixel.
-        const EvalContext prevContext = EvalContext::create(prevPixel, frameDim, SurfaceData::createFromPacked(prevSurfaceData[prevPixelIndex]));
+        const EvalContext prevContext = EvalContext::createPrev(prevPixel, frameDim, SurfaceData::createFromPacked(prevSurfaceData[prevPixelIndex]));
         if (!prevContext.isValid()) return;
 
         // Write debug output.
@@ -84,30 +84,58 @@ struct TemporalResampling
 
         // Setup resampling.
         RisState risState = RisState::createEmpty();
-
+        bool directAccumulation = false;
+        if (!currentContext.isValidNeighbor(float4(prevContext.N, prevContext.distanceToCamera()), normalThreshold, depthThreshold)) {
+            return;
+        }
         if (kUsePairwiseMIS)
         {
             const LoadedLightSample currentLightSample = lights.loadLightSample(currentReservoir.lightSample);
-            float currentTargetPdf = currentContext.evalTargetFunction(currentLightSample);
-            streamingResampleStepMis(risState, currentReservoir, currentLightSample, currentTargetPdf, currentContext, prevReservoir, prevContext, 1, lights, sg);
-            streamingResampleFinalizeMis(risState, currentReservoir, currentTargetPdf, sg);
+            float2 currentPdfWithBGV= currentContext.evalTargetFunctionWithBGV(currentLightSample, kUnbiased);
+            streamingResampleStepMisUnbiased(risState, currentReservoir, currentLightSample, currentPdfWithBGV, currentContext, prevReservoir, prevContext, 1, lights, sg,true);
+            streamingResampleFinalizeMis(risState, currentReservoir, currentPdfWithBGV.x ,sg);
             risState.weight = risState.weight > 0.f ? risState.weightSum / risState.weight : 0.f;
+            if (directAccumulation) {
+                risState.accumulatedContribution = currentReservoir.accumulatedContribution;
+            }
+            else {
+                if (kCVMode) {
+                    risState.accumulatedContribution = risState.accumulatedContribution / risState.M;
+                }
+                if (kCVMode == 2) {
+                    risState.weight=currentReservoir.weight;
+                    risState.lightSample=currentReservoir.lightSample;
+                }
+            }
+            // print("M: ", risState.M);
+            // print("Weight: ", risState.weight);
+            // print("Accumulated Contribution: ", risState.accumulatedContribution);
         }
         else
         {
             // Check if previous sample is valid for reuse.
-            if (!kUnbiased && !currentContext.isValidNeighbor(prevContext, normalThreshold, depthThreshold)) return;
 
             // Resample current and previous reservoirs.
             streamingResampleStep(risState, currentReservoir, currentContext, lights, sg);
             bool usedPrev = streamingResampleStep(risState, prevReservoir, currentContext, lights, sg);
-
+            print("Alpha",currentContext.ggxAlpha);
             // Compute the unbiased normalization term (instead of using 1/M).
             const LoadedLightSample lightSample = lights.loadLightSample(risState.lightSample);
-            float currentPdf = currentContext.evalTargetFunction(lightSample, kUnbiased);
-            float prevPdf = prevContext.evalTargetFunction(lightSample, kUnbiased);
-            float normalization = (usedPrev ? prevPdf : currentPdf) / (currentReservoir.M * currentPdf + prevReservoir.M * prevPdf);
+            float2 pdfwithBGV= currentContext.evalTargetFunctionWithBGV(lightSample, kUnbiased);
+            float currentPdf = pdfwithBGV.x;
+            float prevPdf = prevContext.evalTargetFunction(lightSample, kUnbiased); 
+            float weightprev = prevPdf / (currentReservoir.M * currentPdf + prevReservoir.M * prevPdf);
+            float weightcurrent = currentPdf / (currentReservoir.M * currentPdf + prevReservoir.M * prevPdf);
+            float normalization = usedPrev ? weightprev : weightcurrent;
+            float UCW = risState.weight > 0.f ? (risState.weightSum / risState.M) / risState.weight : 0.f;
             risState.weight = risState.weight > 0.f ? (risState.weightSum * normalization) / risState.weight : 0.f;
+            float3 currentRadiance = lights.evalEmission(risState.lightSample) * pdfwithBGV.y * risState.weight;
+            // float3 currentRadiance = lights.evalEmission(prevReservoir.lightSample) * currentContext.evalScalarBGV(lights.loadLightSample(prevReservoir.lightSample)) * prevReservoir.weight;
+            if (kCVMode) {
+                risState.accumulatedContribution = currentReservoir.accumulatedContribution * currentReservoir.M+
+                                                (prevReservoir.accumulatedContribution+currentRadiance) * prevReservoir.M;
+                risState.accumulatedContribution /= (currentReservoir.M + prevReservoir.M);
+            }
         }
 
         // Save reservoir.

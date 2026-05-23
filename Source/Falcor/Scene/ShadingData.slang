@@ -30,7 +30,7 @@
 import Rendering.Materials.IBxDF;
 import Scene.Material.MaterialData;
 import Utils.Geometry.GeometryHelpers;
-
+import Rendering.Materials.Microfacet;
 /** This struct holds all the data for shading a specific hit point. This consists of:
     - Geometric data
     - Material data (type/ID, BSDF lobes to be evaluated/sampled etc)
@@ -138,5 +138,21 @@ struct ShadingData
     float3 toLocal(float3 v)
     {
         return float3(dot(v, T), dot(v, B), dot(v, N));
+    }
+    float3 getSpecularAlbedo() {
+        const float NdotV = saturate(dot(N, V));
+        const float ggxAlpha = linearRoughness * linearRoughness;
+        float3 specularReflectionAlbedo = (1.f - specularTransmission) * specular;
+        const float3 specularReflectance = approxSpecularIntegralGGX(specularReflectionAlbedo, ggxAlpha, NdotV);
+        return specularReflectance;
+    }
+    float3 getAlbedo() {
+        float3 diffuseReflectionAlbedo = (1.f - diffuseTransmission) * (1.f - specularTransmission) * diffuse;
+
+        const float NdotV = saturate(dot(N, V));
+        const float ggxAlpha = linearRoughness * linearRoughness;
+        float3 specularReflectionAlbedo = (1.f - specularTransmission) * specular;
+        const float3 specularReflectance = approxSpecularIntegralGGX(specularReflectionAlbedo, ggxAlpha, NdotV);
+        return specularReflectance + diffuseReflectionAlbedo;
     }
 };

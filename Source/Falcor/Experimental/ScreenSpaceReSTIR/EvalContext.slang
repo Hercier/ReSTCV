@@ -59,7 +59,28 @@ struct EvalContext
         evalContext.valid = surfaceData.isValid();
         return evalContext;
     }
+    static EvalContext createPrev(uint2 pixel, uint2 frameDim, SurfaceData surfaceData)
+    {
+        const Ray ray = gScene.camera.computeRayPinholePrevFrame(pixel, frameDim);
 
+        EvalContext evalContext = {};
+        evalContext.pos = surfaceData.pos;
+        evalContext.depth = surfaceData.depth;
+        evalContext.N = surfaceData.normal;
+        evalContext.V = -ray.dir;
+        evalContext.NdotV = saturate(dot(evalContext.N, evalContext.V));
+        evalContext.diffuseWeight = surfaceData.diffuseWeight;
+        evalContext.specularWeight = surfaceData.specularWeight;
+        float weightSum = surfaceData.diffuseWeight + surfaceData.specularWeight;
+        evalContext.diffuseSpecularMix = weightSum > 1e-7f ? (surfaceData.diffuseWeight / weightSum) : 1.f;
+        // Clamp roughness to avoid numerical instability when evaluating the GGX lobe.
+        // This is the same threshold as used in the legacy Falcor BRDF.
+        float roughness = max(ROUGHNESS_THRESHOLD, surfaceData.specularRoughness);
+        evalContext.ggxAlpha = roughness * roughness;
+        evalContext.lobes = surfaceData.lobes;
+        evalContext.valid = surfaceData.isValid();
+        return evalContext;
+    }
     bool isValid()
     {
         return valid;
@@ -89,6 +110,10 @@ struct EvalContext
         return isValidNeighbor(float4(otherContext.N, otherContext.depth), normalThreshold, depthThreshold);
     }
 
+    float distanceToCamera()
+    {
+        return distance(gScene.camera.getPosition(), pos);
+    }
     /** Transform direction from world- to local-space.
         \param[in] w Direction in world-space.
         \return Returns direction in local-space.
@@ -173,7 +198,22 @@ struct EvalContext
         float specular = max(0.f, D * G * F / (4.f * NdotV));
         return NdotL > 0.f ? lerp(specular, diffuse, diffuseSpecularMix) : 0.f;
     }
+    float evaldiffuse(float3 L)
+    {
+        float NdotL = saturate(dot(N, L));
+        float3 H = normalize(V + L);
+        float NdotH = saturate(dot(N, H));
+        float LdotH = saturate(dot(L, H));
 
+        float D = evalNdfGGX(ggxAlpha, NdotH);
+        float G = evalMaskingSmithGGXSeparable(ggxAlpha, NdotV, NdotL);
+        float F = specularWeight < 1e-8f ? 0.f : evalFresnelSchlick(specularWeight, 1.f, LdotH) / specularWeight;
+
+        float diffuse = NdotL * M_1_PI;
+        float specular = max(0.f, D * G * F / (4.f * NdotV));
+        specular=ggxAlpha<0.01f?0.f:specular;
+        return NdotL > 0.f ? lerp(specular, diffuse, diffuseSpecularMix) : 0.f;
+    }
     /** Evaluate the target function (target pdf) of a light sample.
         \param[in] evaluatedLightSample Evaluated light sample.
         \param[in] withVisibility Evaluate visibility term.
@@ -187,6 +227,46 @@ struct EvalContext
         return weight;
     }
 
+    float evalScalarBGV(const EvaluatedLightSample evaluatedLightSample, const bool withVisibility = false)
+    {
+        float brdfWeight = evaldiffuse(evaluatedLightSample.dir);
+        float weight = max(0.f, evaluatedLightSample.geomFactor * brdfWeight);
+        if (withVisibility) weight *= evalVisibility(evaluatedLightSample);
+        return weight;
+    }
+    float2 evalTargetFunctionWithBGV(const EvaluatedLightSample evaluatedLightSample, const bool withVisibility = false) {
+        float3 L= evaluatedLightSample.dir;
+        float NdotL = saturate(dot(N, L));
+        float3 H = normalize(V + L);
+        float NdotH = saturate(dot(N, H));
+        float LdotH = saturate(dot(L, H));
+
+        float D = evalNdfGGX(ggxAlpha, NdotH);
+        float G = evalMaskingSmithGGXSeparable(ggxAlpha, NdotV, NdotL);
+        float F = specularWeight < 1e-8f ? 0.f : evalFresnelSchlick(specularWeight, 1.f, LdotH) / specularWeight;
+
+        float diffuse = NdotL * M_1_PI;
+        float specular = max(0.f, D * G * F / (4.f * NdotV));
+        float brdf= NdotL > 0.f ? lerp(specular, diffuse, diffuseSpecularMix) : 0.f;
+        specular = ggxAlpha < 0.01f ? 0.f : specular;
+        float nonspecular = NdotL > 0.f ? lerp(specular, diffuse, diffuseSpecularMix) : 0.f;
+        float pdfweight = max(0.f, evaluatedLightSample.emission * evaluatedLightSample.geomFactor * brdf);
+        float bgvweight = max(0.f, evaluatedLightSample.geomFactor * nonspecular);
+        if (withVisibility) {
+            if(evalVisibility(evaluatedLightSample)==0.f){
+                return float2(0.f,0.f);
+            }
+        }
+        return float2(pdfweight,bgvweight);
+    }
+    float2 evalTargetFunctionWithBGV(const LoadedLightSample loadedLightSample, const bool withVisibility = false)
+    {
+        return evalTargetFunctionWithBGV(loadedLightSample.eval(pos), withVisibility);
+    }
+    float evalScalarBGV(const LoadedLightSample loadedLightSample, const bool withVisibility = false)
+    {
+        return evalScalarBGV(loadedLightSample.eval(pos), withVisibility);
+    }
     /** Evaluate the target function (target pdf) of a light sample.
         \param[in] loadedLightSample Loaded light sample.
         \param[in] withVisibility Evaluate visibility term.

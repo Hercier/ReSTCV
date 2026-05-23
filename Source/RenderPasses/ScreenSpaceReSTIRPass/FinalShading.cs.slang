@@ -11,9 +11,11 @@ import LoadShadingData;
 import Rendering.Materials.StandardMaterial;
 import Rendering.Materials.Microfacet;
 import Experimental.ScreenSpaceReSTIR.ScreenSpaceReSTIR;
+import Utils.Color.ColorHelpers;
 
 RWTexture2D<float4> gColor;
 RWTexture2D<float4> gEmission;
+RWTexture2D<float4> gNormal;
 RWTexture2D<float4> gDiffuseIllumination;
 RWTexture2D<float4> gDiffuseReflectance;
 RWTexture2D<float4> gSpecularIllumination;
@@ -59,8 +61,9 @@ struct FinalShading
             float3 dir;
             float distance;
             float3 Li;
-            bool valid = screenSpaceReSTIR.getFinalSample(pixel, dir, distance, Li);
-
+            float3 contribution;
+            bool valid = screenSpaceReSTIR.getFinalSamplewithCV(pixel, dir, distance, Li, contribution);
+            contribution = contribution*sd.getAlbedo();
             // Evaluate diffuse and specular lobes.
             float3 diffuse = {};
             float3 specular = {};
@@ -77,7 +80,7 @@ struct FinalShading
 
             emission = sd.emissive;
 
-            color += diffuse + specular + emission;
+            color += contribution+diffuse + specular + emission;
 
             // Demodulate diffuse reflectance (albedo) from diffuse color.
             diffuseReflectance += sd.diffuse;
@@ -119,6 +122,7 @@ struct FinalShading
             if (is_valid(gSpecularReflectance)) gSpecularReflectance[pixel] += float4(specularReflectance, 1.f) / numReSTIRInstances;
             if (is_valid(gSpecularIllumination)) gSpecularIllumination[pixel] += float4(specularIllumination, hitT) / numReSTIRInstances;
         }
+        if (is_valid(gNormal)) gNormal[pixel] = float4(sd.N, 1.f);
     }
 };
 

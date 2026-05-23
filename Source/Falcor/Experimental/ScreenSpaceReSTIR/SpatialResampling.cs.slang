@@ -28,7 +28,7 @@ struct SpatialResampling
 
     static const bool kUsePairwiseMIS = USE_PAIRWISE_MIS;
     static bool kUnbiased = UNBIASED;
-
+    static const uint kCVMode = CV_MODE;
     static const DebugOutput kDebugOutput = DebugOutput(DEBUG_OUTPUT);
 
     // Resources.
@@ -96,10 +96,9 @@ struct SpatialResampling
 
         if (kUsePairwiseMIS)
         {
-            const Reservoir currentReservoir = Reservoir::createFromPacked(prevReservoirs[pixelIndex]);
+            Reservoir currentReservoir = Reservoir::createFromPacked(prevReservoirs[pixelIndex]);
             const LoadedLightSample currentLightSample = lights.loadLightSample(currentReservoir.lightSample);
-            float currentTargetPdf = evalContext.evalTargetFunction(currentLightSample);
-
+            float2 currentPdfWithBGV = evalContext.evalTargetFunctionWithBGV(currentLightSample);
             risState.canonicalWeight = 1.f;
             uint validNeighbors = 1;
 
@@ -125,14 +124,22 @@ struct SpatialResampling
                 ++validCount;
 
                 if (kUnbiased)
-                    streamingResampleStepMisUnbiased(risState, currentReservoir, currentLightSample, currentTargetPdf, evalContext, neighborReservoir, neighborContext, neighborCount, lights, sg);
+                    streamingResampleStepMisUnbiased(risState, currentReservoir, currentLightSample, currentPdfWithBGV, evalContext, neighborReservoir, neighborContext, neighborCount, lights, sg);
                 else
-                    streamingResampleStepMis(risState, currentReservoir, currentLightSample, currentTargetPdf, evalContext, neighborReservoir, neighborContext, neighborCount, lights, sg);
+                    streamingResampleStepMis(risState, currentReservoir, currentLightSample, currentPdfWithBGV.x, evalContext, neighborReservoir, neighborContext, neighborCount, lights, sg);
             }
-
-            streamingResampleFinalizeMis(risState, currentReservoir, currentTargetPdf, sg);
+            // based on iid difference and contribution and identical variance for all samples
+            //(1-neighborCount+sqrt((1-neighborCount)*(1-neighborCount)+8*neighborCount))/2.f;
+            float central_importance = 1.7;
+            currentReservoir.accumulatedContribution = central_importance* currentReservoir.accumulatedContribution;
+            streamingResampleFinalizeMis(risState, currentReservoir, currentPdfWithBGV.x, sg);
+            risState.accumulatedContribution = risState.accumulatedContribution / (risState.M+(central_importance-1.f)* currentReservoir.M);
             risState.M = currentReservoir.M;
             risState.weight = risState.weight > 0.f ? (risState.weightSum / validNeighbors) / risState.weight : 0.f;
+            if (kCVMode == 2) {
+                risState.weight=currentReservoir.weight;
+                risState.lightSample=currentReservoir.lightSample;
+            }
         }
         else
         {

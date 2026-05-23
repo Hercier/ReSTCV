@@ -98,6 +98,18 @@ enum class ReSTIRMISKind
     ConstantBiased = 4
 };
 
+enum class ReSTIRCVMode
+#ifdef HOST_CODE
+    : uint32_t
+#endif
+{
+    Disable = 0,
+    Decoupled = 1,
+    ReSTCV = 2,
+    ConstRatio = 3,
+    STCV = 4
+};
+
 enum class SpatialReusePattern
 #ifdef HOST_CODE
     : uint32_t

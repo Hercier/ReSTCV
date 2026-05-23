@@ -18,7 +18,7 @@ import RenderPasses.Shared.Denoising.NRDData;
 import RenderPasses.Shared.Denoising.NRDBuffers;
 import RenderPasses.Shared.Denoising.NRDConstants;
 import NRDHelpers;
-
+import Rendering.Materials.Microfacet;
 struct PathReusePass
 {
     static const uint kNeighborOffsetCount = NEIGHBOR_OFFSET_COUNT;
@@ -37,12 +37,14 @@ struct PathReusePass
     RWStructuredBuffer<PathReservoir> temporalReservoirs; // resulting reservoir for next frame
     StructuredBuffer<PixelReconnectionData> reconnectionDataBuffer;
     StructuredBuffer<PathReuseMISWeight> misWeightBuffer;
-
+    RWBuffer<float4> differenceBuffer;
     RWTexture2D<float4> outputNRDDiffuseRadianceHitDist;    ///< Output resolved diffuse color in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
     RWTexture2D<float4> outputNRDSpecularRadianceHitDist;   ///< Output resolved specular color in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
     RWTexture2D<float4> outputNRDResidualRadianceHitDist;   ///< Output resolved residual color in .rgb and hit distance in .a for NRD. Only valid if kOutputNRDData == true.
-    Texture2D<float4> primaryHitEmission;                     ///< Output per-pixel primary hit emission. Only valid if kOutputNRDData == true.
-
+    Texture2D<float4> primaryHitEmission;                   ///< Output per-pixel primary hit emission. Only valid if kOutputNRDData == true.
+    int gSpatialUpdateRounds;
+    int gUpdateId;
+    float gCentralImportance;
     int gSpatialRoundId;
     int  gNumSpatialRounds;
     uint gSpatialReusePattern;
@@ -103,8 +105,13 @@ struct PathReusePass
             }
             else
             {
+                if(gSmallWindowRadius == 0) {
+                    return 4; // 4-connectivity
+                }
+                else {
                 int smallWindowDiameter = 2 * gSmallWindowRadius + 1;
                 return smallWindowDiameter * smallWindowDiameter; // count self, but not use self as neighbor
+                }
             }
         }
     }
@@ -127,7 +134,6 @@ struct PathReusePass
             return int2(i, rowId) - NRookQuery.xy + pixel;
         }
     }
-
     int2 getNextNeighborPixel(const uint startIndex, int2 pixel, int i)
     {
         int2 neighborPixel = int2(0,0);
@@ -139,10 +145,16 @@ struct PathReusePass
         }
         else if (SpatialReusePattern(gSpatialReusePattern) == SpatialReusePattern::SmallWindow)
         {
+            if (gSmallWindowRadius == 0) {
+                //neighbor pixel is adjacent pixels (4-connectivity)
+                neighborPixel = pixel + int2((i == 0) ? -1 : (i == 1) ? 1 : 0, (i == 2) ? -1 : (i == 3) ? 1 : 0);
+            }
+            else {
             int smallWindowDiameter = 2 * gSmallWindowRadius + 1;
             neighborPixel = pixel + int2(-gSmallWindowRadius + (i % smallWindowDiameter),
                 -gSmallWindowRadius + (i / smallWindowDiameter));
             if (all(neighborPixel == pixel)) neighborPixel = int2(-1);
+            }
         }
  
         return neighborPixel;
@@ -341,73 +353,225 @@ struct PathReusePass
         {
             int validNeighborCount = 0;
             float canonicalWeight = 1;
-
-            for (int i = 0; i < neighborCount; ++i)
-            {
-                int2 neighborPixel = getNextNeighborPixel(startIndex, pixel, i);
-
-                if (!isValidScreenRegion(neighborPixel)) continue;
-
-                PackedHitInfo neighborPrimaryHitPacked;
-                ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
-                if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
-                if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
-
-                PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
-
-                float dstJacobian;
-
-                validNeighborCount++;
-
-                float prefix_approxPdf = 0.f;
-
-                float prefixJacobian;
-
-                ReconnectionData rcData;
-                if (ShiftMapping(kShiftStrategy) == ShiftMapping::Hybrid && centralReservoir.pathFlags.rcVertexLength() > 1)
-                    rcData = reconnectionDataBuffer[centralOffset].data[2 * i];
-                else
-                    rcData = dummyRcData;
-
-                float3 prefixIntegrand = computeShiftedIntegrand(params, prefixJacobian, neighborPrimaryHitPacked, neighborPrimarySd,
-                    centralPrimarySd, centralReservoir, rcData, true);
-
-                prefix_approxPdf = PathReservoir::computeWeight(prefixIntegrand) * prefixJacobian;
-
-                canonicalWeight += 1;
-                if (prefix_approxPdf > 0.f) 
-                    canonicalWeight -= prefix_approxPdf * neighborReservoir.M / (prefix_approxPdf * neighborReservoir.M + centralReservoir.M * PathReservoir::computeWeight(centralReservoir.F) / (neighborCount));
-
-                PathReservoir tempDstReservoir = dstReservoir;
-
-                if (ShiftMapping(kShiftStrategy) == ShiftMapping::Hybrid && neighborReservoir.pathFlags.rcVertexLength() > 1)
-                    rcData = reconnectionDataBuffer[centralOffset].data[2 * i + 1];
-                else
-                    rcData = dummyRcData;
-
-                bool possibleToBeSelected = shiftAndMergeReservoir(params, false, dstJacobian, centralPrimaryHitPacked, centralPrimarySd, tempDstReservoir,
-                    neighborPrimarySd, neighborReservoir, rcData, true, sg, true, 1.f, true); // "true" means hypothetically selected as the sample
-
-                float neighborWeight = 0.f;
-
-                if (possibleToBeSelected)
+            float3 center_rate = centralPrimarySd.getAlbedo();
+            if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::STCV) {
+                mergeWhenEmpty(params, centralReservoir.F, 1.f, dstReservoir, centralReservoir, centralReservoir, sg, true, canonicalWeight);
+            }
+            float3 difference = 0.f;
+            bool gMultiCVPass = gSpatialUpdateRounds > 1;
+            float central_importance = gCentralImportance;
+            if (gUpdateId == 0) {
+                for (int i = 0; i < neighborCount; ++i)
                 {
-                    neighborWeight = PathReservoir::computeWeight(neighborReservoir.F) / dstJacobian * neighborReservoir.M
-                        / ((PathReservoir::computeWeight(neighborReservoir.F) / dstJacobian) * neighborReservoir.M + PathReservoir::computeWeight(tempDstReservoir.F) * centralReservoir.M / (neighborCount));
-                    if (isnan(neighborWeight) || isinf(neighborWeight)) neighborWeight = 0.f;
+                    int2 neighborPixel = getNextNeighborPixel(startIndex, pixel, i);
+
+                    if (!isValidScreenRegion(neighborPixel)) continue;
+
+                    PackedHitInfo neighborPrimaryHitPacked;
+                    ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
+                    if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+                    if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
+
+                    PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
+
+                    float dstJacobian;
+
+                    validNeighborCount++;
+
+                    float prefix_approxPdf = 0.f;
+
+                    float prefixJacobian;
+
+                    ReconnectionData rcData;
+                    if (ShiftMapping(kShiftStrategy) == ShiftMapping::Hybrid && centralReservoir.pathFlags.rcVertexLength() > 1)
+                        rcData = reconnectionDataBuffer[centralOffset].data[2 * i];
+                    else
+                        rcData = dummyRcData;
+
+                    float3 prefixIntegrand = computeShiftedIntegrand(params, prefixJacobian, neighborPrimaryHitPacked, neighborPrimarySd,
+                        centralPrimarySd, centralReservoir, rcData, true);
+
+                    prefix_approxPdf = PathReservoir::computeWeight(prefixIntegrand) * prefixJacobian;
+
+                    canonicalWeight += 1;
+                    float localCanonicalWeight = 1;
+                    if (prefix_approxPdf > 0.f) {
+                        float canonicalneighborWeight = prefix_approxPdf * neighborReservoir.M / (prefix_approxPdf * neighborReservoir.M + centralReservoir.M * PathReservoir::computeWeight(centralReservoir.F) / (neighborCount));
+                        canonicalWeight -= canonicalneighborWeight;
+                        localCanonicalWeight = 1.f - canonicalneighborWeight;
+                    }
+
+                    PathReservoir tempDstReservoir = dstReservoir;
+
+                    if (ShiftMapping(kShiftStrategy) == ShiftMapping::Hybrid && neighborReservoir.pathFlags.rcVertexLength() > 1)
+                        rcData = reconnectionDataBuffer[centralOffset].data[2 * i + 1];
+                    else
+                        rcData = dummyRcData;
+
+                    bool possibleToBeSelected = shiftAndMergeReservoir(params, false, dstJacobian, centralPrimaryHitPacked, centralPrimarySd, tempDstReservoir,
+                        neighborPrimarySd, neighborReservoir, rcData, true, sg, true, 1.f, true); // "true" means hypothetically selected as the sample
+
+                    float neighborWeight = 0.f;
+                    if (possibleToBeSelected)
+                    {
+                        neighborWeight = PathReservoir::computeWeight(neighborReservoir.F) / dstJacobian * neighborReservoir.M
+                            / ((PathReservoir::computeWeight(neighborReservoir.F) / dstJacobian) * neighborReservoir.M + PathReservoir::computeWeight(tempDstReservoir.F) * centralReservoir.M / (neighborCount));
+                        if (isnan(neighborWeight) || isinf(neighborWeight)) neighborWeight = 0.f;
+                    }
+                    if (ReSTIRCVMode(kCVMode) != ReSTIRCVMode::Disable) {
+                        float3 control_term;
+                        if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::Decoupled) {
+                            control_term= float3(0.f);
+                        }
+                        else {
+                            float3 neighbor_rate = neighborPrimarySd.getAlbedo();
+                            float3 ratio = center_rate / neighbor_rate;
+                            ratio = isfinite(ratio) ? ratio : float3(1.f);
+                            ratio = min(ratio, float3(2.f));
+                            if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ReSTCV) {
+                                float weight1 = possibleToBeSelected ? neighborWeight : float(1.f);
+                                float weight2 = prefix_approxPdf > 0.f ? localCanonicalWeight : float(0.f);
+                                control_term = (neighborReservoir.accumulatedContribution
+                                - weight1 * neighborReservoir.F * neighborReservoir.weight
+                                - weight2 * prefixIntegrand * prefixJacobian * centralReservoir.weight) * ratio;
+                                if (gMultiCVPass) {
+                                    difference+=(- weight1 * neighborReservoir.F * neighborReservoir.weight
+                                - weight2 * prefixIntegrand * prefixJacobian * centralReservoir.weight) * ratio;
+                                }
+                            }
+                            else if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ConstRatio) {
+                                float weight1 = possibleToBeSelected ? neighborWeight : float(1.f);
+                                float weight2 = prefix_approxPdf > 0.f ? localCanonicalWeight : float(0.f);
+                                control_term = (neighborReservoir.accumulatedContribution
+                                - weight1 * neighborReservoir.F * neighborReservoir.weight
+                                - weight2 * prefixIntegrand * prefixJacobian * centralReservoir.weight);
+                                if(gMultiCVPass) {
+                                    difference+= (-weight1 * neighborReservoir.F * neighborReservoir.weight
+                                - weight2 * prefixIntegrand * prefixJacobian * centralReservoir.weight);
+                                };
+                            }
+                            else { // STCV comparison branch
+                                print("center:", pixel);
+                                print("neighbor:", neighborPixel);
+                                print("tempDstReservoir.accumulatedContribution:", tempDstReservoir.accumulatedContribution);
+                                print("dstJacobian:", dstJacobian);
+                                print("prefixJacobian:", prefixJacobian);
+                                print("canonicalcolor", centralReservoir.F * centralReservoir.weight);
+                                print("shiftCanonicalColor:", prefixIntegrand * prefixJacobian * centralReservoir.weight);
+                                print("centerneighborColor:", tempDstReservoir.F * tempDstReservoir.weight);
+                                print("neighborColor:", neighborReservoir.F * tempDstReservoir.weight);
+                                float weight1 = possibleToBeSelected ? neighborWeight : float(1.f);
+                                float weight2 = prefix_approxPdf > 0.f ? localCanonicalWeight : float(0.f);
+                                control_term = (neighborReservoir.accumulatedContribution
+                                - weight1 * neighborReservoir.F * neighborReservoir.weight
+                                - weight2 * prefixIntegrand * prefixJacobian * centralReservoir.weight) * ratio;
+                                if (gMultiCVPass) {
+                                    difference += (-weight1 * neighborReservoir.F * neighborReservoir.weight
+                                - weight2 * prefixIntegrand * prefixJacobian * centralReservoir.weight) * ratio;
+                                };
+                                print("control_term:", control_term);
+                                print("tempDstReservoir.M", tempDstReservoir.M);
+                            }
+                        }
+                        tempDstReservoir.accumulatedContribution = // tempDstReservoir.M *
+                            (control_term
+                                + neighborWeight * tempDstReservoir.F * dstJacobian * tempDstReservoir.weight
+                            + localCanonicalWeight * centralReservoir.F * centralReservoir.weight);
+                        if (gMultiCVPass && ReSTIRCVMode(kCVMode) != ReSTIRCVMode::Decoupled) {
+                            difference += neighborWeight * tempDstReservoir.F * dstJacobian * tempDstReservoir.weight
+                            + localCanonicalWeight * centralReservoir.F * centralReservoir.weight;
+                        }
+                        // if(ReSTIRCVMode(kCVMode) == ReSTIRCVMode::STCV)
+                        // {
+                        //     tempDstReservoir.accumulatedContribution = control_term;
+                        //     print("Final accumulatedContribution:", tempDstReservoir.accumulatedContribution);
+                        // }
+                        print("Final accumulatedContribution:", tempDstReservoir.accumulatedContribution);      
+                    }
+                    if(ReSTIRCVMode(kCVMode) == ReSTIRCVMode::STCV) {
+                        mergeWhenEmpty(params, tempDstReservoir.F, dstJacobian, dstReservoir, tempDstReservoir, neighborReservoir, sg, true, neighborWeight);
+                    }
+                    else  {
+                        mergeReservoirWithResamplingMIS(params, tempDstReservoir.F, dstJacobian, dstReservoir, tempDstReservoir, neighborReservoir, sg, true, neighborWeight);
+                    }
                 }
-
-                mergeReservoirWithResamplingMIS(params, tempDstReservoir.F, dstJacobian, dstReservoir, tempDstReservoir, neighborReservoir, sg, true, neighborWeight);
+                if (gMultiCVPass) {
+                    difference=isfinite(difference) ? difference : float3(0.f);
+                    differenceBuffer[centralOffset] = float4(difference, 0.f);
+                }
+                centralReservoir.accumulatedContribution = // centralReservoir.M *
+                    centralReservoir.accumulatedContribution;
+                if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ReSTCV || ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ConstRatio)
+                {
+                    print("Central accumulatedContribution:", centralReservoir.accumulatedContribution);
+                    centralReservoir.accumulatedContribution *= central_importance;
+                }
+                if (ReSTIRCVMode(kCVMode) != ReSTIRCVMode::STCV) {
+                    mergeReservoirWithResamplingMIS(params, centralReservoir.F, 1.f, dstReservoir, centralReservoir, centralReservoir, sg, true, canonicalWeight);
+                }
+                if (dstReservoir.weight > 0)
+                {
+                    if (ReSTIRCVMode(kCVMode) != ReSTIRCVMode::STCV) {
+                        dstReservoir.finalizeGRIS();
+                        dstReservoir.weight /= (validNeighborCount + 1); // compensate for the fact that pairwise resampling MIS was not divided by (k+1)
+                    }
+                }
             }
+            else {
+                dstReservoir= centralReservoir;
+                float3 contribution = differenceBuffer[centralOffset].xyz;
+                for (int i = 0; i < neighborCount; ++i)
+                {
+                    int2 neighborPixel = getNextNeighborPixel(startIndex, pixel, i);
 
-            mergeReservoirWithResamplingMIS(params, centralReservoir.F, 1.f, dstReservoir, centralReservoir, centralReservoir, sg, true, canonicalWeight);
+                    if (!isValidScreenRegion(neighborPixel)) continue;
 
-            if (dstReservoir.weight > 0)
-            {
-                dstReservoir.finalizeGRIS();
-                dstReservoir.weight /= (validNeighborCount + 1); // compensate for the fact that pairwise resampling MIS was not divided by (k+1)
+                    PackedHitInfo neighborPrimaryHitPacked;
+                    ShadingData neighborPrimarySd = getPixelShadingData(neighborPixel, neighborPrimaryHitPacked);
+                    if (!isValidPackedHitInfo(neighborPrimaryHitPacked)) continue;
+                    if (!isValidGeometry(centralPrimarySd, neighborPrimarySd)) continue;
+                    validNeighborCount++;
+                    PathReservoir neighborReservoir = outputReservoirs[params.getReservoirOffset(neighborPixel)];
+
+                    if (ReSTIRCVMode(kCVMode) != ReSTIRCVMode::Disable) {
+                        float3 control_term;
+                        if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::Decoupled) {
+                            control_term = float3(0.f);
+                        }
+                        else {
+                            float3 neighbor_rate = neighborPrimarySd.getAlbedo();
+                            float3 ratio = center_rate / neighbor_rate;
+                            ratio = isfinite(ratio) ? ratio : float3(1.f);
+                            ratio = min(ratio, float3(2.f));
+                            contribution += neighborReservoir.accumulatedContribution * ratio;
+                        }
+                        print("Final accumulatedContribution:", contribution);
+                    }
+                }
+                float3 centralContribution =
+                    centralReservoir.accumulatedContribution;
+                if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ReSTCV || ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ConstRatio)
+                {
+                    print("Central accumulatedContribution:", centralReservoir.accumulatedContribution);
+                    centralContribution *= central_importance;
+                }
+                contribution += centralContribution;
+                contribution= isfinite(contribution) ? contribution : float3(0.f);
+                dstReservoir.accumulatedContribution = contribution;
             }
-            color = dstReservoir.F * dstReservoir.weight;
+            if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ReSTCV || ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ConstRatio) {
+                dstReservoir.accumulatedContribution /= (validNeighborCount + central_importance);
+            } else {
+                dstReservoir.accumulatedContribution /= (validNeighborCount + 1);
+            }
+            if (ReSTIRCVMode(kCVMode) != ReSTIRCVMode::Disable){
+                color = dstReservoir.accumulatedContribution;
+                //print("color", dstReservoir.accumulatedContribution);
+                //print("some color", centralReservoir.F * centralReservoir.weight);
+            }
+            else {
+                color = dstReservoir.F * dstReservoir.weight;
+            }
         }
         /////////////////////
         /// CONSTANT RMIS ///
@@ -533,12 +697,14 @@ struct PathReusePass
 
         if (dstReservoir.weight < 0.f) dstReservoir.weight = 0.f;
         if (isnan(dstReservoir.weight) || isinf(dstReservoir.weight)) dstReservoir.weight = 0.f;
-
+        if (gNumSpatialRounds > 1) {
+            dstReservoir.M/=neighborCount*0.8; // normalize M for multi-round spatial reuse
+        }
         if (PathSamplingMode(kPathSamplingMode) != PathSamplingMode::PathReuse)
             temporalReservoirs[centralOffset] = dstReservoir;
 
-        if (any(isnan(color) || isinf(color) || color < 0.f)) color = 0.f;
-        if (gIsLastRound)
+        if (any(isnan(color) || isinf(color))) color = 0.f;
+        if (gIsLastRound&&(gUpdateId==gSpatialUpdateRounds-1))
         {
             if (useDirectLighting)
             {

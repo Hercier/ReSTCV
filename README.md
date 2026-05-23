@@ -1,50 +1,97 @@
-# ReSTIR Path Tracing (ReSTIR PT)
-![](teaser.jpg)
+# ReSTCV
 
-## Introduction
-- This repo includes the source code for the following SIGGRAPH 2022 paper
+![ReSTCV teaser](Docs/ReSTCV/teaser.png)
 
-> **Generalized Resampled Importance Sampling: Foundations of ReSTIR**<br>
-> Daqi Lin* (University of Utah), Markus Kettunen* (NVIDIA), Benedikt Bitterli (NVIDIA), Jacopo Pantaleoni (NVIDIA), Cem Yuksel (University of Utah), Chris Wyman (NVIDIA)<br>
-> (*Joint first authors) <br>
-> https://graphics.cs.utah.edu/research/projects/gris/ (with embedded interactive viewer and video)
-> https://research.nvidia.com/publication/2022-07_generalized-resampled-importance-sampling-foundations-restir
+This repository contains the public release code for:
 
-ReSTIR Path Tracing (ReSTIR PT) is a resampling-based path tracing algorithm as the result of applying the GRIS theory to ReSTIR. Compared to ReSTIR GI \[Ouyang et al. 2021\], ReSTIR PT handles general types of light transport. The path reuse quality is significantly improved by a context-aware shift mapping, allowing interactive rendering of many-bounce diffuse and specular lighting with high quality.
+**Spatio-Temporal Control Variates with ReSTIR for Real-Time Rendering**
+Zhong Shi, Cunhao Wu, Lifan Wu, Kun Xu
+SIGGRAPH Conference Papers 2026 (Technical Paper Awards Honorable Mention)
 
-- The method is implemented as a render pass called "ReSTIRPTPass" (Source\RenderPasses\ReSTIRPass) in Falcor 4.4.
-See README_Falcor.md for the original README file provided by Falcor.
-- A script `RunReSTIRPTDemo.bat` is provided to show how the method works in an animated version of the VeachAjar scene (from [Benedikt Bitterli's rendering resources](https://benedikt-bitterli.me/resources/)) which is contained in the repo.
-- Before running the scripts, you need to compile the program and download the scene files following the instruction below.
+- Project page: <https://hercier.github.io/restcv/>
+- Paper DOI: <https://doi.org/10.1145/3799902.3811113>
+- Base on Falcor Rendering framework/ ReSTIR PT implementation of Daqi Lin
 
-## Prerequisites
-- Windows 10 version 20H2 or newer
-- ~~Visual Studio 2019 (If you're using VS2022, make sure to install the VS2019 build tools during setup or modification)~~
-- Visual Studio 2022
-- [Windows 10 SDK version 10.0.19041.1 Or Newer] (https://developer.microsoft.com/en-us/windows/downloads/sdk-archive)
-- NVIDIA driver 466.11 or newer
-- RTX 2060 or Higher (NVIDIA graphics card with raytracing support)
-- Get NVAPI, head over to https://developer.nvidia.com/nvapi and download the latest version of NVAPI. Create a folder called `.packman` under `Source/Externals`, Extract the content of the zip file into `Source/Externals/.packman/` and rename `Rxxx-developer` to `nvapi`.
+ReSTCV extends ReSTIR path tracing with spatio-temporal control variates. Standard ReSTIR PT stores a representative path sample in each reservoir and shades mainly from that sample. ReSTCV additionally stores an accumulated color estimate in each reservoir, reuses correlated estimates from neighboring pixels and previous frames, and uses ReSTIR reservoir samples to estimate pixel differences. This reduces variance and visible color noise under low-sample real-time budgets.
 
-## How to compile
-- Make sure you have NVAPI in `Source/Externals/.packman/` 
-- Open Falcor.sln and Build Solution in configuration ReleaseD3D12
+## Main Files
 
-## Run the demo
-- execute `RunReSTIRPTDemo.bat`
-- The GUI contains self-explanatory settings to turn on/off different components of ReSTIR PT or change its quality.  
+- `Source/RenderPasses/ReSTIRPTPass`: the main ReSTIR PT and ReSTCV implementation.
+- `Source/Falcor/Experimental/ScreenSpaceReSTIR`: the screen-space ReSTIR DI/GI module.
+- `Source/RenderPasses/ScreenSpaceReSTIRPass`: the Falcor wrapper pass for screen-space ReSTIR.
+- `Source/Mogwai/Data`: lightweight demo scripts and ablation scripts.
 
-## Test with more scenes
-- You can test your custom scene by running Bin\x64\Release\Mogwai.exe first, then load a scene file.
-- A Falcor pyscene is recommended. For how to create a pyscene, please check out the `Source/RenderPasses/ReSTIRPTPass/Data/VeachAjar/VeachAjar.pyscene` as a template.
-Details can be found in Falcor's [documentation](Docs/Usage/Scene-Formats.md)
-- Alternatively, if you have a scene file with well defined lighting, material, and camera information that is supported by Falocr (like FBX), you can also create a one-line
-pyscene file, e.g. `sceneBuilder.importScene(YOUR_SCENE_FILE)`.
+The main ReSTCV path is controlled by `ReSTIRCVMode.ReSTCV`. The comparison and ablation modes exposed in this release include `Disable` (normal ReSTIR), `STCV`, `Decoupled` (decoupled shading), and `ConstRatio` (constant alpha).
 
-## Offline rendering
-- ReSTIR PT is an unbiased algorithm and can be used for offline rendering. The recommended setting is to disable temporal reuse, use 32 candidate samples per pixel, and set the number of spatial reuse rounds, spatial neighbors, and spatial reuse radius to 3, 6, 10, respectively (more details in the paper). 
+## Build Requirements
 
-## An example screenshot (running on an RTX 3090)
-![](Screenshot.png)
+- Windows 10 20H2 or newer.
+- Visual Studio 2022.
+- Windows 10 SDK 10.0.19041.1 or newer.
+- NVIDIA RTX GPU with ray tracing support.
+- NVIDIA driver 466.11 or newer.
+- NVAPI.
+
+To install NVAPI, download it from <https://developer.nvidia.com/nvapi>, create `Source/Externals/.packman`, extract the SDK there, and rename the extracted `Rxxx-developer` folder to `nvapi`.
+
+## Build
+
+Open `Falcor.sln` in Visual Studio and build `ReleaseD3D12`.
+
+The expected executable path after a successful build is:
+
+```bat
+Bin\x64\Release\Mogwai.exe
+```
+
+Please check out other readmes if you meet any problems.
+
+## Quick Demo
+
+Run:
+
+```bat
+RunReSTCVDemo.bat
+```
+
+This launches Mogwai with `Source\Mogwai\Data\ReSTIRPTDemo.py`. You can also run scripts manually, for example:
+
+```bat
+cd Source\Mogwai\Data\
+..\..\..\Bin\x64\Release\Mogwai.exe --script=ReSTIRPTCV.py
+```
 
 
+
+## Controls
+
+![ReSTIR PT ReSTCV control panel](Docs/ReSTCV/ReSTIRPT_cvpanel.png)
+
+![ReSTIR DI control-variate panel](Docs/ReSTCV/ReSTIRDI_cvpanel.png)
+
+You may toggle between different methods with Control Variate Mode for ReSTIR DI or ReSTIR PT.  And spatial update rounds controls iteration of CV update. Note CV modes are applied seperately to PT and DI.
+
+Other important updates on orginal repo: PT: now the small window size=0 correspond to 4-adjacent neighbors. DI: some detail implementation for unbiased temporal reuse may differ, and rejection strategy may differ.
+
+## Implementation Notes
+
+- Not every original ReSTIR PT configuration is expected to be compatible with current ReSTCV implementation.
+- Especially,  the primary supported ReSTCV configuration uses pairwise MIS. Other ReSTIR MIS variants are not supported.
+
+## Citation (will update when publication is ready)
+
+```bibtex
+@inproceedings{shi2026restcv,
+  title     = {Spatio-Temporal Control Variates with ReSTIR for Real-Time Rendering},
+  author    = {Shi, Zhong and Wu, Cunhao and Wu, Lifan and Xu, Kun},
+  booktitle = {Special Interest Group on Computer Graphics and Interactive Techniques Conference Conference Papers (SIGGRAPH Conference Papers '26)},
+  year      = {2026},
+  doi       = {10.1145/3799902.3811113}
+}
+```
+
+
+
+## License
+
+The original ReSTIR PT implementation license is in LICENSE.md. Other part of code are distributed under CC-BY-4.0.

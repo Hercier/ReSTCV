@@ -48,7 +48,13 @@ struct PathReusePass
     {
         return packed.x != 0;
     }
-
+    bool isValidGeometry(ShadingData centralSd, ShadingData neighborSd)
+    {
+        float3 camPos = gScene.camera.data.posW;
+        float centralDist = distance(camPos, centralSd.posW);
+        float neighborDist = distance(camPos, neighborSd.posW);
+        return dot(centralSd.N, neighborSd.N) >= 0.5f && abs(centralDist - neighborDist) < 0.1f * centralDist;
+    }
     bool isValidScreenRegion(int2 pixel) { return all(pixel >= 0 && pixel < params.frameDim); }
 
     ShadingData getPixelShadingData(int2 pixel, out PackedHitInfo PrimaryHitPacked)
@@ -92,6 +98,11 @@ struct PathReusePass
         PathReservoir centralReservoir = dstReservoir;
         float currentM = dstReservoir.M;
         float3 initialColor = dstReservoir.F * dstReservoir.weight;
+        printSetPixel(pixel);
+        print("weight", dstReservoir.weight);
+        print("M", dstReservoir.M);
+        print("initialColor", initialColor);
+        print("accumulatedcontribution", dstReservoir.accumulatedContribution);
 
         if (ReSTIRMISKind(kTemporalReSTIRMISKind) == ReSTIRMISKind::Talbot)
         {
@@ -131,7 +142,8 @@ struct PathReusePass
             PackedHitInfo temporalPrimaryHitPacked;
             ShadingData temporalPrimarySd = getPixelTemporalShadingData(prevPixel, temporalPrimaryHitPacked);
             if (!isValidPackedHitInfo(temporalPrimaryHitPacked)) return;
-
+            bool directAccumulation = false;
+            if (!isValidGeometry(centralPrimarySd, temporalPrimarySd)) return;
             bool doTemporalUpdateForDynamicScene = kTemporalUpdateForDynamicScene;
 
             PathReservoir temporalReservoir = temporalReservoirs[params.getReservoirOffset(prevPixel)];
@@ -152,7 +164,6 @@ struct PathReusePass
                 {
                     float p_sum = 0;
                     float p_self = 0;
-
                     PathReservoir tempDstReservoir = dstReservoir;
 
                     bool possibleToBeSelected = false;
@@ -174,7 +185,8 @@ struct PathReusePass
                         possibleToBeSelected = shiftAndMergeReservoir(params, doTemporalUpdateForDynamicScene, dstJacobian, centralPrimaryHitPacked, centralPrimarySd, tempDstReservoir,
                             temporalPrimarySd, temporalReservoir, rcData, true, sg, false, 1.f, true); // "true" means hypothetically selected as the sample
                     }
-
+                    float3 tneighborContribution = 0.f;
+                    float p_ = 0.f;
                     if (possibleToBeSelected)
                     {
                         for (int j = curSampleId; j <= prevSampleId; ++j)
@@ -183,7 +195,9 @@ struct PathReusePass
                             {
                                 float cur_p = PathReservoir::toScalar(tempDstReservoir.F) * currentM;
                                 p_sum += cur_p;
-                                if (i == curSampleId) p_self = cur_p;
+                                if (i == curSampleId) {
+                                    p_self = cur_p;
+                                }
                             }
                             else
                             {
@@ -194,7 +208,6 @@ struct PathReusePass
                                     continue;
                                 }
 
-                                float p_ = 0.f;
                                 float tneighborJacobian;
 
                                 ReconnectionData rcData;
@@ -206,6 +219,7 @@ struct PathReusePass
                                 float3 tneighborIntegrand = computeShiftedIntegrand(params, tneighborJacobian, temporalPrimaryHitPacked, temporalPrimarySd,
                                     centralPrimarySd, tempDstReservoir, rcData, true, true); //usePrev
                                 p_ = PathReservoir::toScalar(tneighborIntegrand) * tneighborJacobian;
+                                tneighborContribution = tneighborIntegrand * tneighborJacobian;
                                 p_sum += p_ * temporalReservoir.M;
                             }
                         }
@@ -215,13 +229,86 @@ struct PathReusePass
                     PathReservoir neighborReservoir;
                     if (i == curSampleId) neighborReservoir = tempDstReservoir;
                     else neighborReservoir = temporalReservoir;
-
-                    mergeReservoirWithResamplingMIS(params, tempDstReservoir.F, dstJacobian, dstReservoir, tempDstReservoir, neighborReservoir, sg, false, misWeight);
+                    if (ReSTIRCVMode(kCVMode) != ReSTIRCVMode::Disable) {
+                        if (directAccumulation) {
+                            if (i != curSampleId) {
+                                tempDstReservoir.accumulatedContribution = 0.f;
+                            }
+                        }
+                        else {
+                        if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::Decoupled) {
+                            // tempDstReservoir.accumulatedContribution = tempDstReservoir.M * tempDstReservoir.accumulatedContribution;
+                            tempDstReservoir.accumulatedContribution = tempDstReservoir.weight* misWeight * tempDstReservoir.F * dstJacobian;
+                        }
+                        else if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ConstRatio) {
+                            if (i == curSampleId)
+                            {
+                                float weight2 = p_ == 0.f ? float(0.f) : misWeight;
+                                tempDstReservoir.accumulatedContribution = tempDstReservoir.M * tempDstReservoir.accumulatedContribution + temporalReservoir.M * tempDstReservoir.weight * (-weight2 * tneighborContribution + misWeight * tempDstReservoir.F); // from current sample
+                            }
+                            else
+                            {
+                                float weight1 = possibleToBeSelected ? misWeight : float(1.f);
+                                tempDstReservoir.accumulatedContribution = tempDstReservoir.M * (tempDstReservoir.accumulatedContribution + tempDstReservoir.weight * (-weight1 * neighborReservoir.F + misWeight * tempDstReservoir.F * dstJacobian)); // from previous sample
+                            }
+                        }
+                        else if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::ReSTCV) {
+                            if (i == curSampleId)
+                            {
+                                float weight2 = p_ == 0.f ? float(0.f) : misWeight;
+                                tempDstReservoir.accumulatedContribution = tempDstReservoir.M * tempDstReservoir.accumulatedContribution + temporalReservoir.M * tempDstReservoir.weight * (-weight2 * tneighborContribution + misWeight * tempDstReservoir.F); // from current sample
+                            }
+                            else
+                            {
+                                float weight1 = possibleToBeSelected ? misWeight : float(1.f);
+                                tempDstReservoir.accumulatedContribution = tempDstReservoir.M * (tempDstReservoir.accumulatedContribution + tempDstReservoir.weight * (-weight1 * neighborReservoir.F + misWeight * tempDstReservoir.F * dstJacobian)); // from previous sample
+                            }
+                        } else { // STCV comparison branch
+                            if (i == curSampleId)
+                            {
+                                float weight2 = p_ == 0.f ? float(0.f) : misWeight;
+                                tempDstReservoir.accumulatedContribution = tempDstReservoir.M * tempDstReservoir.accumulatedContribution + temporalReservoir.M * tempDstReservoir.weight * (-weight2 * tneighborContribution + misWeight * tempDstReservoir.F); // from current sample
+                            }
+                            else
+                            {
+                                float weight1 = possibleToBeSelected ? misWeight : float(1.f);
+                                tempDstReservoir.accumulatedContribution = tempDstReservoir.M * (tempDstReservoir.accumulatedContribution + tempDstReservoir.weight * (-weight1 * neighborReservoir.F + misWeight * tempDstReservoir.F * dstJacobian)); // from previous sample
+                            }
+                            
+                        }
+                        }
+                    }
+                    if(ReSTIRCVMode(kCVMode) == ReSTIRCVMode::STCV) {
+                        mergeWhenEmpty(params, tempDstReservoir.F, dstJacobian, dstReservoir, tempDstReservoir, neighborReservoir, sg, false, misWeight);
+                    }
+                    else {
+                        mergeReservoirWithResamplingMIS(params, tempDstReservoir.F, dstJacobian, dstReservoir, tempDstReservoir, neighborReservoir, sg, false, misWeight);
+                    }
                 }
 
                 if (dstReservoir.weight > 0)
                 {
-                    dstReservoir.finalizeGRIS();
+                    if(ReSTIRCVMode(kCVMode) != ReSTIRCVMode::STCV) {
+                        dstReservoir.finalizeGRIS();
+                    }
+                }
+                if (dstReservoir.M == 0.f) dstReservoir.accumulatedContribution = 0.f;
+                else {
+                    if (directAccumulation) {
+                        //nop
+                    }
+                    else {
+                        if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::STCV) {
+                            dstReservoir.accumulatedContribution /= dstReservoir.M;
+                        }
+                        else {
+                            if (ReSTIRCVMode(kCVMode) == ReSTIRCVMode::Decoupled) {
+                                //nop
+                            } else {
+                                dstReservoir.accumulatedContribution /= dstReservoir.M;
+                            }
+                        }
+                    }
                 }
             }
             /////////////////////
@@ -297,7 +384,11 @@ struct PathReusePass
 
             if (dstReservoir.weight < 0.f || isinf(dstReservoir.weight) || isnan(dstReservoir.weight)) dstReservoir.weight = 0.f;
             outputReservoirs[centralOffset] = dstReservoir;
-            color = dstReservoir.F * dstReservoir.weight;
+            if(ReSTIRCVMode(kCVMode) == ReSTIRCVMode::Disable){
+                color = dstReservoir.F * dstReservoir.weight;
+            } else {
+                color = dstReservoir.accumulatedContribution;
+            }
 
             if (gIsLastRound)
             {
